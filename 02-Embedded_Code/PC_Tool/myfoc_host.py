@@ -23,17 +23,176 @@ except ImportError:
 
 
 BAUD_DEFAULT = 2_000_000
+UI_UPDATE_MS = 50
+AUTO_Y_RANGE_INTERVAL_S = 0.20
+Y_RANGE_PADDING_RATIO = 0.15
+CONTROL_COMMAND_REPEAT_COUNT = 3
+CONTROL_COMMAND_REPEAT_INTERVAL_MS = 35
 FRAME_TAIL = b"\x00\x00\x80\x7f"
-FRAME_FLOAT_COUNT_NEW = 8
+FRAME_FLOAT_COUNT_DIAGNOSTIC = 17
+FRAME_FLOAT_COUNT_EXTENDED = 8
+FRAME_FLOAT_COUNT_NEW = 7
 FRAME_FLOAT_COUNT_LEGACY = 6
+FRAME_PAYLOAD_SIZE_DIAGNOSTIC = FRAME_FLOAT_COUNT_DIAGNOSTIC * 4
+FRAME_PAYLOAD_SIZE_EXTENDED = FRAME_FLOAT_COUNT_EXTENDED * 4
 FRAME_PAYLOAD_SIZE_NEW = FRAME_FLOAT_COUNT_NEW * 4
 FRAME_PAYLOAD_SIZE_LEGACY = FRAME_FLOAT_COUNT_LEGACY * 4
-FRAME_SIZE_MAX = FRAME_PAYLOAD_SIZE_NEW + len(FRAME_TAIL)
-TELEMETRY_KEYS_NEW = ("ia", "ib", "ic", "theta", "speed", "ref", "vbus", "vbus_raw")
-TELEMETRY_KEYS_LEGACY = ("ia", "theta", "speed", "ref", "vbus", "vbus_raw")
+FRAME_SIZE_MAX = FRAME_PAYLOAD_SIZE_DIAGNOSTIC + len(FRAME_TAIL)
+UART_BITS_PER_BYTE = 10
+TELEMETRY_KEYS_DIAGNOSTIC = (
+    "ia", "ib", "ic", "theta", "speed", "ref", "vbus",
+    "id", "iq", "id_ref", "iq_ref", "ud", "uq",
+    "tcmp1", "tcmp2", "tcmp3", "foc_state",
+)
+TELEMETRY_KEYS_NEW = ("ia", "ib", "ic", "theta", "speed", "ref", "vbus")
+TELEMETRY_KEYS_LEGACY = ("ia", "theta", "speed", "ref", "vbus")
+CSV_HEADERS = (
+    "time_s", "ia", "ib", "ic", "FluxTheta", "FluxWm", "RefSpeed", "vbus",
+    "Id", "Iq", "Id_ref", "Iq_ref", "Ud", "Uq",
+    "Tcmp1", "Tcmp2", "Tcmp3", "FOC_state",
+)
 HISTORY_LEN = 30000
-SPEED_MIN = 0.0
-SPEED_MAX = 1200.0
+SPEED_MIN = 120.0
+SPEED_MAX = 1800.0
+CURRENT_ABS_VALID_MAX = 100.0
+THETA_VALID_MIN = -0.25
+THETA_VALID_MAX = 2.0 * math.pi + 0.25
+SPEED_ABS_VALID_MAX = 20000.0
+VBUS_VALID_MIN = -0.5
+VBUS_VALID_MAX = 120.0
+PLOT_WINDOW_MIN = 0.05
+PLOT_WINDOW_MAX = 120.0
+PLOT_DEFAULT_WINDOWS = {
+    "current": 0.65,
+    "theta": 0.65,
+    "speed": 8.0,
+    "voltage": 8.0,
+}
+PLOT_MAX_VISIBLE_POINTS = {
+    "current": 5000,
+    "theta": 5000,
+    "speed": 3000,
+    "voltage": 3000,
+}
+PLOT_Y_MIN_SPANS = {
+    "current": 0.1,
+    "theta": 0.5,
+    "speed": 5.0,
+    "voltage": 0.5,
+}
+THETA_PLOT_Y_MIN = -1.0
+THETA_PLOT_Y_MAX = 7.0
+
+
+def port_name_from_combo_text(text):
+    text = text.strip()
+    if not text:
+        return ""
+    return text.split()[0]
+
+
+def wrap_angle_0_2pi(theta):
+    if not math.isfinite(theta):
+        return theta
+    return theta % (2.0 * math.pi)
+
+
+def is_plausible_telemetry(values):
+    required_keys = ("ia", "theta", "speed", "ref", "vbus")
+    if any(not math.isfinite(float(values.get(key, float("nan")))) for key in required_keys):
+        return False
+
+    for key in ("ib", "ic"):
+        if key in values and not math.isfinite(float(values[key])):
+            return False
+
+    for key in ("id", "iq", "id_ref", "iq_ref", "ud", "uq", "tcmp1", "tcmp2", "tcmp3", "foc_state"):
+        if key in values and not math.isfinite(float(values[key])):
+            return False
+
+    current_keys = ("ia", "ib", "ic")
+    if any(abs(float(values[key])) > CURRENT_ABS_VALID_MAX for key in current_keys if key in values):
+        return False
+
+    dq_current_keys = ("id", "iq", "id_ref", "iq_ref")
+    if any(abs(float(values[key])) > CURRENT_ABS_VALID_MAX for key in dq_current_keys if key in values):
+        return False
+
+    dq_voltage_keys = ("ud", "uq")
+    if any(abs(float(values[key])) > 200.0 for key in dq_voltage_keys if key in values):
+        return False
+
+    if any(not -1000.0 <= float(values[key]) <= 9000.0 for key in ("tcmp1", "tcmp2", "tcmp3") if key in values):
+        return False
+
+    if "foc_state" in values and not -1.0 <= float(values["foc_state"]) <= 10.0:
+        return False
+
+    theta = float(values["theta"])
+    speed = float(values["speed"])
+    ref = float(values["ref"])
+    vbus = float(values["vbus"])
+    return (
+        THETA_VALID_MIN <= theta <= THETA_VALID_MAX
+        and abs(speed) <= SPEED_ABS_VALID_MAX
+        and abs(ref) <= SPEED_ABS_VALID_MAX
+        and VBUS_VALID_MIN <= vbus <= VBUS_VALID_MAX
+    )
+
+
+def time_range_for_latest(latest_time, window, x_values=None, y_values=None):
+    window = max(PLOT_WINDOW_MIN, min(PLOT_WINDOW_MAX, float(window)))
+    latest_time = float(latest_time)
+    left = max(0.0, latest_time - window)
+    right = latest_time + max(0.005, window * 0.02)
+    if right <= left:
+        right = left + 0.5
+
+    if x_values is not None and y_values is not None:
+        x = np.asarray(x_values, dtype=float)
+        y = np.asarray(y_values, dtype=float)
+        if len(x) == len(y) and len(x) > 0:
+            mask = (x >= left) & (x <= right) & np.isfinite(y)
+            if np.any(mask):
+                left = max(left, float(x[mask][0]))
+    return left, right
+
+
+def curve_data_for_plot(plot_key, x_values, y_values):
+    x = np.asarray(x_values, dtype=float)
+    y = np.asarray(y_values, dtype=float)
+    return x, y
+
+
+def visible_curve_data_for_plot(plot_key, x_values, y_values, left, right, max_points=None):
+    x = np.asarray(x_values, dtype=float)
+    y = np.asarray(y_values, dtype=float)
+    if len(x) != len(y) or len(x) == 0:
+        return np.asarray([], dtype=float), np.asarray([], dtype=float)
+
+    mask = (x >= float(left)) & (x <= float(right))
+    x = x[mask]
+    y = y[mask]
+    if max_points is not None and len(x) > max_points:
+        step = max(1, math.ceil(len(x) / int(max_points)))
+        x = x[::step]
+        y = y[::step]
+    return curve_data_for_plot(plot_key, x, y)
+
+
+def padded_y_range(y_values, min_span):
+    y = np.asarray(y_values, dtype=float)
+    y = y[np.isfinite(y)]
+    if len(y) == 0:
+        return None
+
+    y_min = float(np.min(y))
+    y_max = float(np.max(y))
+    span = max(y_max - y_min, float(min_span))
+    center = (y_min + y_max) * 0.5
+    half = span * 0.5
+    pad = span * Y_RANGE_PADDING_RATIO
+    return center - half - pad, center + half + pad
 
 
 @dataclass(frozen=True)
@@ -54,7 +213,16 @@ CHANNELS = [
     Channel("speed", "观测速度", "rpm", "#118ab2", "speed", True),
     Channel("ref", "参考速度", "rpm", "#f59f00", "speed", True),
     Channel("vbus", "控制母线电压", "V", "#a855f7", "voltage", True),
-    Channel("vbus_raw", "ADC 母线电压", "V", "#00b4d8", "voltage", True),
+    Channel("id", "Id", "A", "#64748b", "current", False),
+    Channel("iq", "Iq", "A", "#0f766e", "current", False),
+    Channel("id_ref", "Id_ref", "A", "#94a3b8", "current", False),
+    Channel("iq_ref", "Iq_ref", "A", "#16a34a", "current", False),
+    Channel("ud", "Ud", "V", "#f97316", "voltage", False),
+    Channel("uq", "Uq", "V", "#dc2626", "voltage", False),
+    Channel("tcmp1", "Tcmp1", "count", "#7c3aed", "voltage", False),
+    Channel("tcmp2", "Tcmp2", "count", "#9333ea", "voltage", False),
+    Channel("tcmp3", "Tcmp3", "count", "#a855f7", "voltage", False),
+    Channel("foc_state", "FOC_state", "", "#475569", "speed", False),
 ]
 
 class WorkerSignals(QtCore.QObject):
@@ -70,6 +238,8 @@ class SerialWorker:
         self.thread = None
         self.running = threading.Event()
         self.write_lock = threading.Lock()
+        self.frame_interval_s = (FRAME_SIZE_MAX * UART_BITS_PER_BYTE) / BAUD_DEFAULT
+        self.last_frame_timestamp = None
 
     def start(self, port, baud):
         if serial is None:
@@ -85,6 +255,8 @@ class SerialWorker:
             timeout=0.02,
             write_timeout=0.2,
         )
+        self.frame_interval_s = (FRAME_SIZE_MAX * UART_BITS_PER_BYTE) / float(baud)
+        self.last_frame_timestamp = None
         self.running.set()
         self.thread = threading.Thread(target=self._read_loop, daemon=True)
         self.thread.start()
@@ -113,6 +285,7 @@ class SerialWorker:
         data = (text.strip() + "\n").encode("ascii", errors="ignore")
         with self.write_lock:
             self.serial.write(data)
+            self.serial.flush()
 
     def _read_loop(self):
         buffer = bytearray()
@@ -126,7 +299,7 @@ class SerialWorker:
 
             if chunk:
                 buffer.extend(chunk)
-                self._parse_buffer(buffer)
+                self._parse_buffer(buffer, time.perf_counter())
             elif len(buffer) > FRAME_SIZE_MAX * 16:
                 del buffer[:-FRAME_SIZE_MAX]
 
@@ -144,42 +317,65 @@ class SerialWorker:
                 pass
             self.frame_queue.put_nowait(item)
 
-    def _parse_buffer(self, buffer):
+    def _queue_parsed_frames(self, frames, received_at):
+        if not frames:
+            return
+
+        interval = self.frame_interval_s
+        first_timestamp = received_at - (len(frames) - 1) * interval
+        if self.last_frame_timestamp is not None:
+            first_timestamp = self.last_frame_timestamp + interval
+
+        for index, values in enumerate(frames):
+            self._queue_frame(first_timestamp + index * interval, values)
+
+        self.last_frame_timestamp = first_timestamp + (len(frames) - 1) * interval
+
+    def _parse_buffer(self, buffer, received_at=None):
+        if received_at is None:
+            received_at = time.perf_counter()
+
+        frames = []
         while True:
             tail_index = buffer.find(FRAME_TAIL)
             if tail_index < 0:
                 if len(buffer) > 8192:
                     del buffer[:-FRAME_SIZE_MAX]
+                self._queue_parsed_frames(frames, received_at)
                 return
 
-            if tail_index >= FRAME_PAYLOAD_SIZE_NEW:
-                start = tail_index - FRAME_PAYLOAD_SIZE_NEW
-                payload = bytes(buffer[start:tail_index])
-                try:
-                    raw_values = struct.unpack("<8f", payload)
-                    values = dict(zip(TELEMETRY_KEYS_NEW, raw_values))
-                except struct.error:
-                    values = None
+            values = self._decode_frame_before_tail(buffer, tail_index)
+            del buffer[:tail_index + len(FRAME_TAIL)]
+            if values is not None:
+                frames.append(values)
 
-                del buffer[:tail_index + len(FRAME_TAIL)]
-                if values is not None:
-                    self._queue_frame(time.perf_counter(), values)
-            elif tail_index >= FRAME_PAYLOAD_SIZE_LEGACY:
-                start = tail_index - FRAME_PAYLOAD_SIZE_LEGACY
-                payload = bytes(buffer[start:tail_index])
-                try:
-                    raw_values = struct.unpack("<6f", payload)
-                    values = dict(zip(TELEMETRY_KEYS_LEGACY, raw_values))
-                    values["ib"] = float("nan")
-                    values["ic"] = float("nan")
-                except struct.error:
-                    values = None
+    def _decode_frame_before_tail(self, buffer, tail_index):
+        candidates = (
+            (FRAME_PAYLOAD_SIZE_DIAGNOSTIC, FRAME_FLOAT_COUNT_DIAGNOSTIC, TELEMETRY_KEYS_DIAGNOSTIC, False),
+            (FRAME_PAYLOAD_SIZE_EXTENDED, FRAME_FLOAT_COUNT_EXTENDED, TELEMETRY_KEYS_NEW, False),
+            (FRAME_PAYLOAD_SIZE_NEW, FRAME_FLOAT_COUNT_NEW, TELEMETRY_KEYS_NEW, False),
+            (FRAME_PAYLOAD_SIZE_LEGACY, FRAME_FLOAT_COUNT_LEGACY, TELEMETRY_KEYS_LEGACY, True),
+        )
+        for payload_size, float_count, keys, legacy_missing_phases in candidates:
+            if tail_index < payload_size:
+                continue
 
-                del buffer[:tail_index + len(FRAME_TAIL)]
-                if values is not None:
-                    self._queue_frame(time.perf_counter(), values)
-            else:
-                del buffer[:tail_index + len(FRAME_TAIL)]
+            start = tail_index - payload_size
+            payload = bytes(buffer[start:tail_index])
+            try:
+                raw_values = struct.unpack(f"<{float_count}f", payload)
+            except struct.error:
+                continue
+
+            values = dict(zip(keys, raw_values))
+            if legacy_missing_phases and is_plausible_telemetry(values):
+                values["ib"] = float("nan")
+                values["ic"] = float("nan")
+                return values
+            if not legacy_missing_phases and is_plausible_telemetry(values):
+                return values
+
+        return None
 
 
 class TelemetryCard(QtWidgets.QFrame):
@@ -238,6 +434,9 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         self.plot_items = {}
         self.legends = {}
         self.channel_checks = {}
+        self.plot_window_spins = {}
+        self.plot_follow_latest = {}
+        self.plot_auto_y = {}
         self.cards = {}
         self.t0 = None
         self.connected = False
@@ -245,8 +444,6 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         self.dark_theme = False
         self.demo_enabled = False
         self.demo_phase = 0.0
-        self.last_theta_raw = None
-        self.theta_unwrapped = 0.0
         self.last_values = {channel.key: float("nan") for channel in CHANNELS}
         self.programmatic_range_change = False
 
@@ -257,6 +454,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         self.frames_total = 0
         self.frames_this_second = 0
         self.last_rate_time = time.perf_counter()
+        self.last_auto_y_time = 0.0
         self.last_port_devices = []
         self.last_port_scan_status = ""
 
@@ -266,7 +464,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         self.refresh_ports(force_status=True)
 
         self.ui_timer = QtCore.QTimer(self)
-        self.ui_timer.setInterval(30)
+        self.ui_timer.setInterval(UI_UPDATE_MS)
         self.ui_timer.timeout.connect(self._update_ui)
         self.ui_timer.start()
 
@@ -280,7 +478,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         self.demo_timer.timeout.connect(self._push_demo_frame)
 
     def _configure_plot_theme(self):
-        pg.setConfigOptions(antialias=True, foreground="#334155", background="#ffffff")
+        pg.setConfigOptions(antialias=False, foreground="#334155", background="#ffffff")
 
     def _build_ui(self):
         self.setStyleSheet(self._style_sheet())
@@ -338,6 +536,8 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         self.port_combo.setMinimumHeight(38)
         self.port_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.port_combo.setMinimumContentsLength(24)
+        self.port_combo.setEditable(True)
+        self.port_combo.lineEdit().setPlaceholderText("COM12")
         self.refresh_button = QtWidgets.QPushButton("刷新")
         self.connect_button = QtWidgets.QPushButton("连接")
         self.connect_button.setObjectName("primaryButton")
@@ -416,20 +616,27 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         self.grid_check.setChecked(True)
         self.pause_check = QtWidgets.QCheckBox("暂停绘图")
 
-        self.window_spin = QtWidgets.QDoubleSpinBox()
-        self.window_spin.setMinimumHeight(36)
-        self.window_spin.setRange(1.0, 120.0)
-        self.window_spin.setDecimals(1)
-        self.window_spin.setSingleStep(1.0)
-        self.window_spin.setValue(8.0)
-        self.window_spin.setSuffix(" s")
-
         controls.addWidget(self.auto_scroll_check, 0, 0, 1, 2)
         controls.addWidget(self.auto_scale_check, 1, 0, 1, 2)
         controls.addWidget(self.grid_check, 2, 0)
         controls.addWidget(self.pause_check, 2, 1)
-        controls.addWidget(QtWidgets.QLabel("时间窗"), 3, 0)
-        controls.addWidget(self.window_spin, 3, 1)
+        window_labels = {
+            "current": "电流窗",
+            "theta": "角度窗",
+            "speed": "速度窗",
+            "voltage": "电压窗",
+        }
+        for row, plot_key in enumerate(("current", "theta", "speed", "voltage"), start=3):
+            spin = QtWidgets.QDoubleSpinBox()
+            spin.setMinimumHeight(36)
+            spin.setRange(PLOT_WINDOW_MIN, PLOT_WINDOW_MAX)
+            spin.setDecimals(2)
+            spin.setSingleStep(0.05 if PLOT_DEFAULT_WINDOWS[plot_key] < 1.0 else 1.0)
+            spin.setValue(PLOT_DEFAULT_WINDOWS[plot_key])
+            spin.setSuffix(" s")
+            self.plot_window_spins[plot_key] = spin
+            controls.addWidget(QtWidgets.QLabel(window_labels[plot_key]), row, 0)
+            controls.addWidget(spin, row, 1)
         layout.addLayout(controls)
 
         channel_grid = QtWidgets.QGridLayout()
@@ -541,16 +748,14 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
             "speed": speed_plot,
             "voltage": voltage_plot,
         }
+        self.plot_follow_latest = {key: True for key in self.plot_items}
+        self.plot_auto_y = {key: True for key in self.plot_items}
         plot_units = {
             "current": ("电流", "A"),
             "theta": ("角度", "rad"),
             "speed": ("速度", "rpm"),
             "voltage": ("电压", "V"),
         }
-
-        theta_plot.setXLink(current_plot)
-        speed_plot.setXLink(current_plot)
-        voltage_plot.setXLink(current_plot)
 
         for key, plot_item in self.plot_items.items():
             plot_item.showGrid(x=True, y=True, alpha=0.25)
@@ -564,7 +769,9 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
                 left_axis.enableAutoSIPrefix(False)
             view_box = plot_item.getViewBox()
             if hasattr(view_box, "sigRangeChangedManually"):
-                view_box.sigRangeChangedManually.connect(self._on_plot_range_changed_manually)
+                view_box.sigRangeChangedManually.connect(
+                    lambda *args, plot_key=key: self._on_plot_range_changed_manually(plot_key)
+                )
 
         speed_plot.setLabel("bottom", "时间", units="s")
         voltage_plot.setLabel("bottom", "时间", units="s")
@@ -578,7 +785,10 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
                 name=channel.label,
             )
             curve.setVisible(channel.default_visible)
-            curve.setDownsampling(auto=True, method="peak")
+            if channel.key == "theta":
+                curve.setDownsampling(auto=False)
+            else:
+                curve.setDownsampling(auto=True, method="peak")
             curve.setClipToView(True)
             self.curves[channel.key] = curve
             self._install_legend_click_handler(channel)
@@ -658,8 +868,8 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
     def _connect_ui(self):
         self.refresh_button.clicked.connect(self.refresh_ports)
         self.connect_button.clicked.connect(self.toggle_connection)
-        self.run_button.clicked.connect(lambda: self.send_command("RUN=1"))
-        self.stop_button.clicked.connect(lambda: self.send_command("RUN=0"))
+        self.run_button.clicked.connect(lambda: self.send_control_command("RUN=1"))
+        self.stop_button.clicked.connect(lambda: self.send_control_command("RUN=0"))
         self.speed_send_button.clicked.connect(self.send_speed)
         self.demo_button.toggled.connect(self.toggle_demo)
         self.command_send_button.clicked.connect(self.send_custom_command)
@@ -677,6 +887,11 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
 
         self.speed_slider.valueChanged.connect(lambda value: self.speed_spin.setValue(float(value)))
         self.speed_spin.valueChanged.connect(lambda value: self.speed_slider.setValue(int(value)))
+
+        for plot_key, spin in self.plot_window_spins.items():
+            spin.valueChanged.connect(
+                lambda value, plot_key=plot_key: self._on_plot_window_changed(plot_key, value)
+            )
 
         for check in self.channel_checks.values():
             check.toggled.connect(self._update_channel_visibility)
@@ -739,7 +954,8 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         if self.connected:
             return
 
-        current_device = self.port_combo.currentData()
+        current_device = self._selected_port()
+        current_text = self.port_combo.currentText().strip()
 
         if list_ports is None:
             self.set_status("未安装 pyserial，运行 run.bat 会自动安装。")
@@ -763,11 +979,22 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
                     index = i
                     break
             self.port_combo.setCurrentIndex(index)
+        elif current_text:
+            self.port_combo.addItem(current_text, port_name_from_combo_text(current_text))
+            self.port_combo.setCurrentIndex(0)
 
         status = f"发现 {len(ports)} 个串口"
+        if not ports:
+            status += "，可手动输入 COMx 后连接"
         if force_status or status != self.last_port_scan_status:
             self.last_port_scan_status = status
             self.set_status(status)
+
+    def _selected_port(self):
+        port = self.port_combo.currentData()
+        if port:
+            return port
+        return port_name_from_combo_text(self.port_combo.currentText())
 
     def toggle_connection(self):
         if self.connected:
@@ -777,7 +1004,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
             self.refresh_ports(force_status=True)
             return
 
-        port = self.port_combo.currentData()
+        port = self._selected_port()
         if not port:
             QtWidgets.QMessageBox.warning(self, "串口", "先选择一个串口。")
             return
@@ -803,18 +1030,30 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
             self._set_connected(False)
             self.set_status("串口已断开")
 
-    def send_command(self, command):
+    def send_command(self, command, announce=True):
         try:
             self.worker.send_line(command)
-            self.append_console(f"> {command}")
-            self.set_status(f"已发送 {command}")
+            if announce:
+                self.append_console(f"> {command}")
+                self.set_status(f"已发送 {command}")
         except Exception as exc:
-            QtWidgets.QMessageBox.warning(self, "发送失败", str(exc))
+            if announce:
+                QtWidgets.QMessageBox.warning(self, "发送失败", str(exc))
+            else:
+                self.append_console(f"发送失败: {command} ({exc})")
+
+    def send_control_command(self, command):
+        self.send_command(command)
+        for repeat_index in range(1, CONTROL_COMMAND_REPEAT_COUNT):
+            QtCore.QTimer.singleShot(
+                CONTROL_COMMAND_REPEAT_INTERVAL_MS * repeat_index,
+                lambda command=command: self.send_command(command, announce=False),
+            )
 
     def send_speed(self):
         speed = max(SPEED_MIN, min(SPEED_MAX, self.speed_spin.value()))
         self.speed_spin.setValue(speed)
-        self.send_command(f"SPD={speed:.1f}")
+        self.send_control_command(f"SPD={speed:.1f}")
 
     def send_custom_command(self):
         text = self.command_edit.text().strip()
@@ -827,8 +1066,6 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         self.demo_enabled = checked
         if checked:
             self.t0 = None
-            self.last_theta_raw = None
-            self.theta_unwrapped = 0.0
             self.demo_timer.start()
             self.set_status("演示数据已开启")
         else:
@@ -847,7 +1084,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         path = os.path.join(data_dir, datetime.now().strftime("myfoc_%Y%m%d_%H%M%S.csv"))
         self.log_file = open(path, "w", newline="", encoding="utf-8")
         self.log_writer = csv.writer(self.log_file)
-        self.log_writer.writerow(["time_s", "ia", "ib", "ic", "FluxTheta", "FluxWm", "RefSpeed", "vbus", "vbus_raw"])
+        self.log_writer.writerow(CSV_HEADERS)
         self.logging = True
         self.log_button.setText("停止记录")
         self.log_label.setText(path)
@@ -877,57 +1114,76 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
 
     def _set_follow_latest(self, checked):
         if checked:
+            self.plot_follow_latest = {key: True for key in self.plot_items}
             self._scroll_to_latest()
         elif self.time_history:
             self.programmatic_range_change = True
             try:
-                self._scroll_to_latest()
+                self.plot_follow_latest = {key: False for key in self.plot_items}
             finally:
                 self.programmatic_range_change = False
 
-    def _on_plot_range_changed_manually(self, *args):
+    def _on_plot_range_changed_manually(self, plot_key):
         if self.programmatic_range_change:
             return
         if self.auto_scroll_check.isChecked():
-            self.auto_scroll_check.blockSignals(True)
-            self.auto_scroll_check.setChecked(False)
-            self.auto_scroll_check.blockSignals(False)
-        if self.auto_scale_check.isChecked():
-            self.auto_scale_check.blockSignals(True)
-            self.auto_scale_check.setChecked(False)
-            self.auto_scale_check.blockSignals(False)
-            for plot_item in self.plot_items.values():
-                plot_item.enableAutoRange(axis="y", enable=False)
+            self.plot_follow_latest[plot_key] = True
+            self._sync_plot_window_from_view(plot_key)
+        else:
+            self.plot_follow_latest[plot_key] = False
+
+        if not self.auto_scale_check.isChecked():
+            self.plot_auto_y[plot_key] = False
+            self.plot_items[plot_key].enableAutoRange(axis="y", enable=False)
+
+    def _sync_plot_window_from_view(self, plot_key):
+        spin = self.plot_window_spins.get(plot_key)
+        plot_item = self.plot_items.get(plot_key)
+        if spin is None or plot_item is None:
+            return
+
+        view_range = plot_item.getViewBox().viewRange()[0]
+        window = max(PLOT_WINDOW_MIN, min(PLOT_WINDOW_MAX, float(view_range[1] - view_range[0])))
+        spin.blockSignals(True)
+        try:
+            spin.setValue(window)
+        finally:
+            spin.blockSignals(False)
 
     def _set_grid_visible(self, checked):
         grid_alpha = 0.18 if self.dark_theme else 0.25
         for plot_item in self.plot_items.values():
             plot_item.showGrid(x=checked, y=checked, alpha=grid_alpha)
 
+    def _on_plot_window_changed(self, plot_key, _value):
+        self.plot_follow_latest[plot_key] = True
+        if self.auto_scroll_check.isChecked():
+            self._scroll_to_latest()
+
     def _apply_auto_scale(self):
         enabled = self.auto_scale_check.isChecked()
+        self.plot_auto_y = {key: enabled for key in self.plot_items}
         for plot_item in self.plot_items.values():
-            plot_item.enableAutoRange(axis="y", enable=enabled)
+            plot_item.enableAutoRange(axis="y", enable=False)
         if enabled:
-            for plot_item in self.plot_items.values():
-                plot_item.autoRange()
+            self._refresh_visible_y_ranges(force=True)
 
     def reset_view(self):
         self.auto_scroll_check.setChecked(True)
         self.auto_scale_check.setChecked(True)
+        self.plot_follow_latest = {key: True for key in self.plot_items}
+        self.plot_auto_y = {key: True for key in self.plot_items}
         self.programmatic_range_change = True
         try:
             for plot_item in self.plot_items.values():
-                plot_item.enableAutoRange(axis="y", enable=True)
-                plot_item.autoRange()
+                plot_item.enableAutoRange(axis="y", enable=False)
             self._scroll_to_latest()
+            self._refresh_visible_y_ranges(force=True)
         finally:
             self.programmatic_range_change = False
 
     def clear_data(self):
         self.t0 = None
-        self.last_theta_raw = None
-        self.theta_unwrapped = 0.0
         self.time_history.clear()
         for data in self.history.values():
             data.clear()
@@ -935,6 +1191,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
             curve.setData([], [])
         self.frames_total = 0
         self.frames_this_second = 0
+        self.last_auto_y_time = 0.0
         self.rate_label.setText("0 frame/s | 0 frames")
         self.append_console("已清空曲线缓存")
 
@@ -946,8 +1203,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         for key, curve in self.curves.items():
             curve.setVisible(self.channel_checks[key].isChecked())
         if self.auto_scale_check.isChecked():
-            for plot_item in self.plot_items.values():
-                plot_item.autoRange()
+            self._refresh_visible_y_ranges(force=True)
 
     def _push_demo_frame(self):
         now = time.perf_counter()
@@ -961,7 +1217,16 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
             "speed": 600.0 + 18.0 * math.sin(phase * 0.9) + 2.0 * math.sin(phase * 8.0),
             "ref": self.speed_spin.value(),
             "vbus": 24.0 + 0.05 * math.sin(phase * 0.6),
-            "vbus_raw": 24.0 + 0.18 * math.sin(phase * 1.4) + 0.03 * math.sin(phase * 19.0),
+            "id": 0.02 * math.sin(phase * 3.0),
+            "iq": 0.45 + 0.06 * math.sin(phase * 1.7),
+            "id_ref": 0.0,
+            "iq_ref": 0.5,
+            "ud": 0.2 * math.sin(phase * 2.0),
+            "uq": 7.5 + 0.3 * math.sin(phase * 0.9),
+            "tcmp1": 4000.0 + 120.0 * math.sin(phase * 6.0),
+            "tcmp2": 4000.0 + 120.0 * math.sin(phase * 6.0 - 2.094),
+            "tcmp3": 4000.0 + 120.0 * math.sin(phase * 6.0 + 2.094),
+            "foc_state": 5.0,
         }
         try:
             self.frame_queue.put_nowait((now, values))
@@ -992,14 +1257,19 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
 
             for channel in CHANNELS:
                 value = float(values.get(channel.key, float("nan")))
+                if channel.key == "theta":
+                    value = wrap_angle_0_2pi(value)
                 self.last_values[channel.key] = value
                 if channel.key == "theta":
-                    self.history[channel.key].append(self._unwrap_theta(value))
+                    self.history[channel.key].append(value)
                 else:
                     self.history[channel.key].append(value)
 
             if self.logging and self.log_writer:
-                self.log_writer.writerow([f"{t_rel:.6f}", *[f"{float(values.get(key, float('nan'))):.8g}" for key in TELEMETRY_KEYS_NEW]])
+                self.log_writer.writerow([
+                    f"{t_rel:.6f}",
+                    *[f"{float(values.get(key, float('nan'))):.8g}" for key in TELEMETRY_KEYS_DIAGNOSTIC],
+                ])
 
             drained += 1
             self.frames_total += 1
@@ -1014,52 +1284,146 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
             return
 
         x = np.fromiter(self.time_history, dtype=float)
+        latest_time = float(x[-1])
+        y_arrays = {}
         for channel in CHANNELS:
+            if not self.channel_checks[channel.key].isChecked():
+                continue
             y = np.fromiter(self.history[channel.key], dtype=float)
-            if len(y) == len(x):
-                self.curves[channel.key].setData(x, y)
+            y_arrays[channel.key] = y
 
-        latest_time = x[-1]
+        ranges = self._active_plot_x_ranges(latest_time, x, y_arrays)
+
+        for channel in CHANNELS:
+            if not self.channel_checks[channel.key].isChecked():
+                continue
+            y = y_arrays.get(channel.key)
+            if len(y) == len(x):
+                left, right = ranges[channel.plot]
+                plot_x, plot_y = visible_curve_data_for_plot(
+                    channel.plot,
+                    x,
+                    y,
+                    left,
+                    right,
+                    PLOT_MAX_VISIBLE_POINTS[channel.plot],
+                )
+                self.curves[channel.key].setData(plot_x, plot_y)
+
         if self.auto_scroll_check.isChecked():
-            self._scroll_to_latest()
+            self._apply_plot_x_ranges(ranges, only_following=True)
 
         if self.auto_scale_check.isChecked():
-            for plot_item in self.plot_items.values():
-                plot_item.enableAutoRange(axis="y", enable=True)
+            now = time.perf_counter()
+            if now - self.last_auto_y_time >= AUTO_Y_RANGE_INTERVAL_S:
+                self._apply_visible_y_ranges(x, y_arrays, ranges)
+                self.last_auto_y_time = now
 
-    def _unwrap_theta(self, theta_raw):
-        if self.last_theta_raw is None:
-            self.last_theta_raw = theta_raw
-            self.theta_unwrapped = theta_raw
-            return self.theta_unwrapped
+    def _active_plot_x_ranges(self, latest_time, x=None, y_arrays=None):
+        latest_ranges = self._plot_time_ranges(latest_time, x, y_arrays)
+        current_ranges = self._current_plot_x_ranges()
+        if not self.auto_scroll_check.isChecked():
+            return current_ranges
+        return {
+            plot_key: latest_ranges[plot_key] if self.plot_follow_latest.get(plot_key, True) else current_ranges[plot_key]
+            for plot_key in self.plot_items
+        }
 
-        delta = theta_raw - self.last_theta_raw
-        while delta > math.pi:
-            delta -= 2.0 * math.pi
-        while delta < -math.pi:
-            delta += 2.0 * math.pi
-        self.theta_unwrapped += delta
-        self.last_theta_raw = theta_raw
-        return self.theta_unwrapped
+    def _plot_time_ranges(self, latest_time, x=None, y_arrays=None):
+        ranges = {}
+        for plot_key in self.plot_items:
+            spin = self.plot_window_spins.get(plot_key)
+            window = spin.value() if spin is not None else PLOT_DEFAULT_WINDOWS[plot_key]
+            y_for_plot = None
+            if x is not None and y_arrays is not None:
+                finite_mask = np.zeros(len(x), dtype=bool)
+                for channel in CHANNELS:
+                    if channel.plot != plot_key:
+                        continue
+                    y = y_arrays.get(channel.key)
+                    if y is not None and len(y) == len(x):
+                        finite_mask |= np.isfinite(y)
+                if np.any(finite_mask):
+                    y_for_plot = finite_mask.astype(float)
+                    y_for_plot[~finite_mask] = float("nan")
+            ranges[plot_key] = time_range_for_latest(latest_time, window, x, y_for_plot)
+        return ranges
+
+    def _current_plot_x_ranges(self):
+        ranges = {}
+        for plot_key, plot_item in self.plot_items.items():
+            view_range = plot_item.getViewBox().viewRange()[0]
+            ranges[plot_key] = (float(view_range[0]), float(view_range[1]))
+        return ranges
+
+    def _apply_plot_x_ranges(self, ranges, only_following=False):
+        self.programmatic_range_change = True
+        try:
+            for plot_key, plot_item in self.plot_items.items():
+                if only_following and not self.plot_follow_latest.get(plot_key, True):
+                    continue
+                left, right = ranges[plot_key]
+                plot_item.setXRange(left, right, padding=0.0)
+        finally:
+            self.programmatic_range_change = False
+
+    def _refresh_visible_y_ranges(self, force=False):
+        if not self.time_history:
+            return
+        now = time.perf_counter()
+        if not force and now - self.last_auto_y_time < AUTO_Y_RANGE_INTERVAL_S:
+            return
+
+        x = np.fromiter(self.time_history, dtype=float)
+        y_arrays = {
+            channel.key: np.fromiter(self.history[channel.key], dtype=float)
+            for channel in CHANNELS
+            if self.channel_checks[channel.key].isChecked()
+        }
+        ranges = self._active_plot_x_ranges(float(x[-1]), x, y_arrays)
+        self._apply_visible_y_ranges(x, y_arrays, ranges)
+        self.last_auto_y_time = now
+
+    def _apply_visible_y_ranges(self, x, y_arrays, ranges):
+        self.programmatic_range_change = True
+        try:
+            for plot_key, plot_item in self.plot_items.items():
+                if not self.auto_scale_check.isChecked() or not self.plot_auto_y.get(plot_key, True):
+                    continue
+                if plot_key == "theta":
+                    plot_item.setYRange(THETA_PLOT_Y_MIN, THETA_PLOT_Y_MAX, padding=0.0)
+                    continue
+
+                left, right = ranges[plot_key]
+                visible_parts = []
+                mask = (x >= left) & (x <= right)
+                for channel in CHANNELS:
+                    if channel.plot != plot_key:
+                        continue
+                    y = y_arrays.get(channel.key)
+                    if y is not None and len(y) == len(x):
+                        visible_parts.append(y[mask])
+                if not visible_parts:
+                    continue
+
+                y_range = padded_y_range(np.concatenate(visible_parts), PLOT_Y_MIN_SPANS[plot_key])
+                if y_range is not None:
+                    plot_item.setYRange(y_range[0], y_range[1], padding=0.0)
+        finally:
+            self.programmatic_range_change = False
 
     def _scroll_to_latest(self):
         if not self.time_history:
             return
 
         x = np.fromiter(self.time_history, dtype=float)
-        latest_time = float(x[-1])
-        window = self.window_spin.value()
-        visible_x = x[x >= (latest_time - window)]
-        left = float(visible_x[0]) if len(visible_x) else max(0.0, latest_time - window)
-        right = latest_time + max(0.1, window * 0.02)
-        if right <= left:
-            right = left + 0.5
-
-        self.programmatic_range_change = True
-        try:
-            self.plot_items["current"].setXRange(left, right, padding=0.0)
-        finally:
-            self.programmatic_range_change = False
+        y_arrays = {
+            channel.key: np.fromiter(self.history[channel.key], dtype=float)
+            for channel in CHANNELS
+            if self.channel_checks[channel.key].isChecked()
+        }
+        ranges = self._active_plot_x_ranges(float(x[-1]), x, y_arrays)
+        self._apply_plot_x_ranges(ranges, only_following=True)
 
     def _update_cards(self):
         for key, card in self.cards.items():

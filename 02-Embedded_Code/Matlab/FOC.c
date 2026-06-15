@@ -80,6 +80,16 @@ preprocessor word size checks.
 /* Exported block signals */
 real32_T FluxWm;                       /* '<S62>/sum' */
 real32_T FluxTheta;                    /* '<S63>/mod' */
+real32_T FocDiagId;
+real32_T FocDiagIq;
+real32_T FocDiagIdRef;
+real32_T FocDiagIqRef;
+real32_T FocDiagUd;
+real32_T FocDiagUq;
+real32_T FocDiagTcmp1;
+real32_T FocDiagTcmp2;
+real32_T FocDiagTcmp3;
+real32_T FocDiagState;
 
 /* Exported data definition */
 
@@ -688,6 +698,11 @@ void FOC_step(void)
        &rtb_Integrator_jp);
 
   /* End of Outputs for SubSystem: '<S3>/Park' */
+  FocDiagId = rtb_DiscreteTimeIntegrator;
+  FocDiagIq = rtb_Integrator_jp;
+  FocDiagIdRef = 0.0F;
+  FocDiagIqRef = rtDW.Merge1;
+  FocDiagState = (real32_T)rtDW.Motor_state;
 
   /* Sum: '<S61>/Sum1' incorporates:
    *  Constant: '<S61>/Constant'
@@ -736,6 +751,9 @@ void FOC_step(void)
   /* Saturate: '<S170>/Saturation' incorporates:
    *  Saturate: '<S220>/Saturation'
    */
+  FocDiagUd = rtb_DiscreteTimeIntegrator;
+  FocDiagUq = rtb_Integrator_jp;
+
   In_park(rtb_DiscreteTimeIntegrator, rtb_Integrator_jp, rtb_Sin, rtb_Cos,
           &rtb_Add_d, &rtb_Add1);
 
@@ -749,12 +767,15 @@ void FOC_step(void)
 
   /* Outport: '<Root>/Tcmp1' */
   rtY.Tcmp1 = rtb_PWM_HalfPeriod[0];
+  FocDiagTcmp1 = rtY.Tcmp1;
 
   /* Outport: '<Root>/Tcmp2' */
   rtY.Tcmp2 = rtb_PWM_HalfPeriod[1];
+  FocDiagTcmp2 = rtY.Tcmp2;
 
   /* Outport: '<Root>/Tcmp3' */
   rtY.Tcmp3 = rtb_PWM_HalfPeriod[2];
+  FocDiagTcmp3 = rtY.Tcmp3;
 
   /* Gain: '<S64>/L_eta2_prev' incorporates:
    *  Gain: '<S64>/L_eta2_now'

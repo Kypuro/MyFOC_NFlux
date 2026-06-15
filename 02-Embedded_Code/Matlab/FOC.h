@@ -178,6 +178,16 @@ extern ExtY rtY;
  */
 extern real32_T FluxWm;                /* '<S62>/sum' */
 extern real32_T FluxTheta;             /* '<S63>/mod' */
+extern real32_T FocDiagId;
+extern real32_T FocDiagIq;
+extern real32_T FocDiagIdRef;
+extern real32_T FocDiagIqRef;
+extern real32_T FocDiagUd;
+extern real32_T FocDiagUq;
+extern real32_T FocDiagTcmp1;
+extern real32_T FocDiagTcmp2;
+extern real32_T FocDiagTcmp3;
+extern real32_T FocDiagState;
 
 /* Model entry point functions */
 extern void FOC_initialize(void);
