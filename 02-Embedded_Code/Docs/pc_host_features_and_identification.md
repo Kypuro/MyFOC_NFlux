@@ -1,81 +1,73 @@
-# PC host features and parameter identification notes
+# 上位机功能记录与参数辨识说明
 
-## Current PC host scope
+## 当前上位机定位
 
-The PC host is a PySide6 + pyqtgraph serial monitor and control tool for the
-MyFOC_NFlux firmware. It keeps the firmware protocol simple and compatible with
-VOFA JustFloat telemetry.
+MyFOC_NFlux 上位机是一个基于 PySide6 和 pyqtgraph 的串口监控与控制工具，用于替代 VOFA 的基础观测和控制流程。当前协议保持简单，仍兼容 VOFA JustFloat 帧格式。
 
-## Serial connection
+## 串口连接
 
-- Uses USART3 through the CH340 USB serial adapter.
-- Default baud rate is `2000000`.
-- Supports manual port refresh and automatic port list refresh every 1 second.
-- Connect and disconnect are handled from the left sidebar.
-- Serial read runs in a worker thread and decoded frames are passed to the UI by
-  a queue, so UI drawing does not block the serial read loop.
+- 通过 CH340 USB 串口连接 STM32 的 USART3。
+- 默认波特率为 `2000000`。
+- 支持手动刷新串口列表。
+- 串口列表每 1 秒自动刷新，插拔串口后无需重启上位机。
+- 串口连接和断开由左侧控制区完成。
+- 串口读取运行在独立工作线程中，解码后的帧通过队列交给界面线程，避免绘图阻塞串口读取。
 
-## Telemetry protocol
+## 遥测协议
 
-STM32 sends little-endian single precision floats followed by the VOFA frame
-tail. New firmware sends the 17-float diagnostic frame:
+STM32 发送小端序 IEEE754 单精度浮点数，末尾追加 VOFA JustFloat 固定帧尾。新固件发送 17 路诊断帧：
 
 ```text
 float[17] + 00 00 80 7F
 ```
 
-The current channels are:
+当前通道顺序如下：
 
-| Index | Signal | Unit / meaning |
+| 序号 | 信号 | 含义 |
 | --- | --- | --- |
-| 0 | `ia` | A phase current, A |
-| 1 | `ib` | B phase current, A |
-| 2 | `ic` | C phase current, A |
-| 3 | `FluxTheta` | flux angle, rad, wrapped to `0..2*pi` in cards |
-| 4 | `FluxWm` | observed mechanical speed, rpm |
-| 5 | `RefSpeed` | speed command, rpm |
-| 6 | `v_bus` | DC bus voltage, V |
-| 7 | `Id` | d-axis current, A |
-| 8 | `Iq` | q-axis current, A |
-| 9 | `Id_ref` | d-axis current reference, A |
-| 10 | `Iq_ref` | q-axis current reference, A |
-| 11 | `Ud` | d-axis voltage command, V |
-| 12 | `Uq` | q-axis voltage command, V |
-| 13 | `Tcmp1` | TIM1 compare value for phase A |
-| 14 | `Tcmp2` | TIM1 compare value for phase B |
-| 15 | `Tcmp3` | TIM1 compare value for phase C |
-| 16 | `FOC_state` | generated model startup/run state |
+| 0 | `ia` | A 相电流，单位 A |
+| 1 | `ib` | B 相电流，单位 A |
+| 2 | `ic` | C 相电流，单位 A |
+| 3 | `FluxTheta` | 磁链角，单位 rad，卡片显示为 `0..2*pi` |
+| 4 | `FluxWm` | 观测机械转速，单位 rpm |
+| 5 | `RefSpeed` | 目标转速，单位 rpm |
+| 6 | `v_bus` | 母线电压，单位 V |
+| 7 | `Id` | d 轴电流，单位 A |
+| 8 | `Iq` | q 轴电流，单位 A |
+| 9 | `Id_ref` | d 轴电流给定，单位 A |
+| 10 | `Iq_ref` | q 轴电流给定，单位 A |
+| 11 | `Ud` | d 轴电压指令，单位 V |
+| 12 | `Uq` | q 轴电压指令，单位 V |
+| 13 | `Tcmp1` | TIM1 A 相比较值 |
+| 14 | `Tcmp2` | TIM1 B 相比较值 |
+| 15 | `Tcmp3` | TIM1 C 相比较值 |
+| 16 | `FOC_state` | 生成代码内部启动/运行状态 |
 
-The parser still accepts older `float[7]`, `float[6]`, and transitional
-`float[8]` frame formats for compatibility.
-Frames are rejected when values are not finite or outside the basic plausibility
-range.
+上位机仍兼容旧版 `float[7]`、`float[6]` 和过渡期 `float[8]` 帧。旧固件没有诊断量时，新增通道会显示为空值。
 
-## Real-time display
+## 实时显示
 
-- Top cards show the latest value of each telemetry channel.
-- The plot area is a 2x2 layout:
-  - three phase currents,
-  - flux angle,
-  - speed,
-  - DC bus voltage.
-- The current plot shows `ia`, `ib`, and `ic` together.
-- The speed plot shows observed speed and reference speed together.
-- The flux angle plot displays the wrapped `0..2*pi` sawtooth waveform.
-- Each plot has its own X time window setting, so current, angle, speed, and
-  voltage can use different viewing ranges.
-- Mouse wheel zoom and drag pan operate per plot.
-- Manual zoom disables follow-latest for that plot only; other plots continue
-  to update normally.
-- Y auto-scale is per plot and leaves padding around the visible data.
-- Grid, pause drawing, reset view, clear data, and channel visibility are
-  available from the sidebar.
-- Channel visibility can also be toggled from the legend.
-- Light and dark themes are supported.
+- 顶部卡片显示各遥测通道的最新值。
+- 曲线区为 2x2 布局：
+  - 三相电流；
+  - 磁链角；
+  - 速度；
+  - 母线电压。
+- 三相电流图同时显示 `ia`、`ib`、`ic`，诊断用的 `Id/Iq/Id_ref/Iq_ref` 默认隐藏，可手动勾选。
+- 速度图同时显示观测速度和参考速度，`FOC_state` 默认隐藏，可用于调试启动状态。
+- 磁链角图显示 `0..2*pi` 回绕后的锯齿波形。
+- 母线电压图可显示 `v_bus`，也可手动开启 `Ud/Uq` 和 `Tcmp1/2/3`。
+- 四个图各自拥有独立的横轴时间窗口，适合按信号类型设置不同观察范围。
+- 鼠标滚轮缩放、拖拽平移按单个图独立生效。
+- 手动缩放某个图后，只取消该图的跟随最新数据，其他图继续更新。
+- Y 轴自动缩放按单个图处理，并在可见数据上下留出空白。
+- 支持网格、暂停绘图、重置视图、清空曲线和通道显示/隐藏。
+- 点击图例也可以切换对应曲线显示状态。
+- 支持浅色和深色主题。
 
-## Control commands
+## 控制命令
 
-PC sends ASCII line commands ending with `\n`:
+PC 下发以 `\n` 结尾的 ASCII 行命令：
 
 ```text
 RUN=1
@@ -83,71 +75,59 @@ RUN=0
 SPD=600
 ```
 
-Implemented controls:
+已实现的控制：
 
-- `RUN=1`: request motor start.
-- `RUN=0`: request motor stop.
-- `SPD=x`: set target speed.
-- Custom command entry for manual protocol testing.
+- `RUN=1`：请求电机启动。
+- `RUN=0`：请求电机停止。
+- `SPD=x`：设置目标转速。
+- 自定义命令输入框：用于手动测试协议。
 
-The speed command is clamped in both the host and the firmware. The current
-software command range is:
+速度命令在上位机和固件两侧都会限幅。当前软件命令范围为：
 
 ```text
 120..1800 rpm
 ```
 
-The host repeats `RUN` and `SPD` commands briefly after a button click to reduce
-the effect of serial receive timing and make button actions more reliable.
+为了降低串口接收时序导致命令偶发丢失的影响，上位机会在按钮点击后短时间内重复发送 RUN/STOP/SPD 命令。
 
-## Data logging and demo mode
+## 数据记录和演示模式
 
-- CSV logging writes files under `02-Embedded_Code/PC_Tool/data`.
-- CSV columns are:
+- CSV 文件保存到 `02-Embedded_Code/PC_Tool/data`。
+- 当前 CSV 列为：
 
 ```text
 time_s, ia, ib, ic, FluxTheta, FluxWm, RefSpeed, vbus,
 Id, Iq, Id_ref, Iq_ref, Ud, Uq, Tcmp1, Tcmp2, Tcmp3, FOC_state
 ```
 
-- Demo mode generates local simulated frames so the UI and plotting behavior can
-  be tested without a board.
+- 演示模式会在本地产生模拟遥测帧，不接板子也能检查界面和曲线流程。
 
-## Reserved but not active
+## 已预留但尚未启用
 
-The UI contains disabled controls for future work:
+界面中保留了以下入口，但当前只是占位：
 
-- position mode,
-- trajectory profile settings,
-- `Rs` identification,
-- `Ld/Lq` identification,
-- flux linkage identification.
+- 位置模式；
+- 轨迹规划参数；
+- `Rs` 参数辨识；
+- `Ld/Lq` 参数辨识；
+- 磁链参数辨识。
 
-These controls are placeholders only. The firmware protocol does not yet
-implement the required identification commands or diagnostic telemetry.
+这些控件暂未接入固件协议。后续需要固件先实现辨识命令和更完整的诊断遥测，上位机再启用这些按钮。
 
-## Current known limitations
+## 当前已知限制
 
-- The firmware currently reports only 7 telemetry floats. This is enough for
-  basic observation but not enough to diagnose high-speed voltage saturation
-  directly.
-- The FOC model limits speed-loop output to `Iq_ref = +/-3 A`.
-- The generated FOC model limits each d/q voltage command to about `+/-12.47 V`.
-- The current model does not implement field weakening. With the present motor
-  parameters and 24 V bus, speeds near 2000 rpm are unlikely under load unless
-  voltage utilization, motor parameters, or field weakening are improved.
-- `FluxWm` is treated by the host as mechanical rpm. Some firmware comments may
-  still describe it as electrical rad/s and should be corrected when the
-  telemetry format is next changed.
+- 17 路遥测帧比旧 7 路帧更长，串口发送帧率会下降。
+- 固件采用尽力发送策略：USART3 DMA 忙时跳过当前遥测帧，不阻塞 10kHz FOC 中断。
+- FOC 生成代码中速度环输出被限制为 `Iq_ref = +/-3 A`。
+- FOC 生成代码中 d/q 轴电压指令各自被限制到约 `+/-12.47 V`。
+- 当前模型没有弱磁控制。以现有电机参数和 24V 母线估算，带负载接近 2000 rpm 时很可能受电压余量限制。
+- `FluxWm` 在上位机中按机械 rpm 处理。固件中部分旧注释曾写成电角速度 rad/s，后续整理注释时应统一。
 
-## Can parameter identification start now?
+## 现在是否可以做参数辨识
 
-Yes, but it should start with controlled offline tests, not with the current
-closed-loop speed run.
+可以开始，但建议先做受控的离线辨识，不建议直接用当前闭环速度运行数据辨识参数。
 
-Before automated identification is added to the host, first add firmware support
-for a small identification mode and extra telemetry. The minimum useful
-diagnostic set is:
+自动辨识前，固件至少需要支持一个小的辨识模式，并能上传以下诊断量：
 
 ```text
 ia, ib, ic,
@@ -158,55 +138,46 @@ Tcmp1, Tcmp2, Tcmp3,
 FOC_state
 ```
 
-Recommended identification order:
+推荐辨识顺序：
 
-1. Current and voltage scaling
+1. 电流和电压比例校准
 
-   Verify `CURRENT_ADC_TO_AMP`, current offset, current sign, phase order, and
-   `VBUS_ADC_SCALE`. Bad scaling makes every later identified parameter wrong.
+   先确认 `CURRENT_ADC_TO_AMP`、电流 offset、电流方向、相序和 `VBUS_ADC_SCALE`。比例不准会导致后续所有辨识结果都不可信。
 
-2. Stator resistance `Rs`
+2. 定子电阻 `Rs`
 
-   Lock the rotor or keep it stationary, inject a small DC current/vector, wait
-   for current to settle, then estimate:
+   锁住转子或保持转子静止，注入较小直流电流/电压矢量，等待电流稳定后估算：
 
    ```text
    Rs = U / I
    ```
 
-   Use several current levels and average the linear region. Stop if current or
-   temperature rises too much.
+   应使用多个电流水平，在近似线性区域内取平均。若电流或温升过高，应立即停止。
 
-3. Phase inductance `L`, or `Ld/Lq`
+3. 相电感 `L` 或 `Ld/Lq`
 
-   With the rotor locked, apply a small voltage step or current step and fit the
-   current transient:
+   锁住转子，施加小电压阶跃或电流阶跃，拟合电流上升过程：
 
    ```text
    i(t) = I_final * (1 - exp(-t * Rs / L))
    L = tau * Rs
    ```
 
-   For `Ld/Lq`, repeat with the injected vector aligned to d and q axes.
+   如果要辨识 `Ld/Lq`，需要分别沿 d 轴和 q 轴注入。
 
-4. Flux linkage `flux`
+4. 磁链 `flux`
 
-   Best measured by back-EMF with the motor spun externally, or estimated from a
-   stable no-load run after `Rs` and `L` are known:
+   最可靠的方法是外部拖动电机测反电动势；也可以在 `Rs` 和 `L` 已知后，用稳定空载运行数据估算：
 
    ```text
    flux ~= (Uq - Rs * Iq - omega_e * Ld * Id) / omega_e
    omega_e = mechanical_rad_per_sec * pole_pairs
    ```
 
-5. Optional mechanical parameters
+5. 可选机械参数
 
-   Inertia and friction can be estimated later from speed step responses. They
-   are not required before fixing the electrical model and observer parameters.
+   转动惯量和摩擦可后续通过速度阶跃响应估计。它们不应排在电气参数和观测器参数之前。
 
-## Next implementation step
+## 下一步建议
 
-The next useful software change is to extend the telemetry frame and host plots
-with `Id/Iq`, `Iq_ref`, `Ud/Uq`, and PWM compare values. This will show whether
-the 1220 rpm ceiling is caused by speed-loop current saturation, voltage
-saturation, bus voltage sag, observer loss, or PWM clipping.
+下一步应先用新增的 `Id/Iq`、`Iq_ref`、`Ud/Uq` 和 PWM 比较值确认高速上不去的具体原因：是速度环电流限幅、d/q 电压饱和、母线电压下陷、观测器失锁，还是 PWM 输出已经接近边界。

@@ -1,53 +1,31 @@
-# MyFOC_NFlux technical issue log
+# MyFOC_NFlux 技术问题记录
 
-This file records firmware, protocol, control, and measurement issues found
-during bring-up. Visual polish and layout-only notes are intentionally excluded.
+本文只记录固件、协议、控制、测量和参数相关问题。纯界面类问题不记录在这里。
 
 ## 串口命令偶发无响应
 
-- Symptom: `RUN=1`, `RUN=0`, or `SPD=x` sometimes required several button
-  clicks before the firmware reacted.
-- Root cause found: single-byte UART interrupt receive was vulnerable to loss
-  under 2 Mbps telemetry traffic and 10 kHz FOC interrupt load.
-- Fix applied: USART3 RX was changed to DMA circular receive. The main loop now
-  polls the DMA write pointer and parses complete ASCII command lines.
-- Host-side mitigation: RUN/STOP/SPD commands are sent several times with a
-  short interval after a button click.
-- Verification: unit tests check that the firmware starts `HAL_UART_Receive_DMA`
-  and uses `DMA_CIRCULAR`.
+- 现象：`RUN=1`、`RUN=0` 或 `SPD=x` 有时需要点击多次，固件才有反应。
+- 根因：原先的单字节 UART 中断接收在 2Mbps 遥测发送和 10kHz FOC 中断负载下容易丢字节或发生接收溢出。
+- 已处理：USART3 RX 改为 DMA 环形接收，主循环轮询 DMA 写入位置并解析完整 ASCII 命令行。
+- 上位机侧缓解：RUN/STOP/SPD 按钮点击后会短时间内重复发送命令，降低偶发丢包影响。
+- 验证方式：单元测试检查固件使用 `HAL_UART_Receive_DMA`，并确认 USART3 RX DMA 为 `DMA_CIRCULAR`。
 
 ## 低速给定反转和抖动
 
-- Symptom: commanding low speed such as 100 rpm could make the motor reverse,
-  accelerate unexpectedly, and shake.
-- Root cause found: the generated sensorless startup process transitions from
-  an open-loop startup region around 600 rpm into closed loop. A much lower
-  closed-loop target can create a large speed error at handover and destabilize
-  the observer/control loop.
-- Fix applied: software speed command range was clamped to `120..1800 rpm`.
-- Remaining risk: the current sensorless startup strategy is still not designed
-  for very low speed operation. Lower speeds should be tested gradually.
+- 现象：给定 100 rpm 这类低速时，电机可能反转、速度越来越快，并伴随明显抖动。
+- 根因：当前无感启动流程先经过约 600 rpm 附近的开环启动/切换区域，再进入闭环。若闭环目标远低于切换速度，切换瞬间会产生很大的速度误差，容易导致观测器或控制环失稳。
+- 已处理：软件速度命令范围限制为 `120..1800 rpm`。
+- 剩余风险：当前无感启动策略仍不适合极低速运行。低速调试需要逐步降低速度，并观察电流、磁链角和 `FOC_state`。
 
 ## 高速约 1220 rpm 上不去
 
-- Symptom: after raising the software speed limit, the observed speed stayed
-  near 1220 rpm instead of reaching the command.
-- Evidence from code: speed command path is clamped at 1800 rpm, but the FOC
-  model limits speed-loop `Iq_ref` to `+/-3 A` and d/q voltage commands to about
-  `+/-12.47 V`.
-- Analysis: with the current model parameters (`Rs=6.97 ohm`,
-  `L=5.35 mH`, `flux=0.016884 Wb`, `Pn=4`), a loaded high-speed point can hit
-  the voltage equation before the requested speed is reached.
-- Next diagnostic action: add telemetry for `Id/Iq`, `Id_ref/Iq_ref`, `Ud/Uq`,
-  PWM compare values, and FOC state. This has now been added to the protocol so
-  the actual saturation source can be checked from captured data.
+- 现象：放宽软件速度上限后，观测速度仍停在约 1220 rpm，无法继续接近目标速度。
+- 代码证据：速度命令路径已经允许到 1800 rpm，但 FOC 模型内部速度环输出限制为 `Iq_ref = +/-3 A`，d/q 轴电压指令限制到约 `+/-12.47 V`。
+- 参数分析：当前模型参数为 `Rs=6.97 ohm`、`L=5.35 mH`、`flux=0.016884 Wb`、`Pn=4`。在带负载高速点，电机电压方程可能先达到电压限制，导致继续提高速度给定也无法升速。
+- 后续诊断：协议已经增加 `Id/Iq`、`Id_ref/Iq_ref`、`Ud/Uq`、PWM 比较值和 `FOC_state`。后续应通过实测数据确认到底是电流限幅、电压饱和、母线下陷、观测器失锁还是 PWM 触边。
 
-## Telemetry frame bandwidth
+## 遥测帧带宽增加
 
-- Symptom risk: increasing telemetry from 7 floats to 17 floats increases each
-  JustFloat frame from 32 bytes to 72 bytes.
-- Design decision: keep the existing best-effort TX DMA policy. If USART3 is
-  busy, the firmware skips the current telemetry frame instead of blocking the
-  10 kHz ADC/FOC interrupt.
-- Consequence: frame rate will drop compared with 7-float telemetry, but control
-  timing is protected.
+- 风险：遥测从 7 个 float 增加到 17 个 float 后，JustFloat 帧长度从 32 字节增加到 72 字节。
+- 设计选择：保持现有尽力发送策略。若 USART3 DMA 忙，固件跳过当前遥测帧，而不是阻塞 10kHz ADC/FOC 中断。
+- 影响：上位机显示帧率会低于 7 路遥测版本，但控制实时性优先，不因串口发送阻塞 FOC。

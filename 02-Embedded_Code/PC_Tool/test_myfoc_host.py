@@ -271,7 +271,8 @@ class TechnicalIssueDocTest(unittest.TestCase):
         text = issue_log.read_text(encoding="utf-8")
         self.assertIn("串口命令偶发无响应", text)
         self.assertIn("低速给定反转和抖动", text)
-        self.assertNotIn("界面", text)
+        self.assertNotIn("缩放体验", text)
+        self.assertNotIn("配色", text)
 
 
 if __name__ == "__main__":
