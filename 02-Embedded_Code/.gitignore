@@ -1,0 +1,27 @@
+# dot files
+/.vscode/launch.json
+/.settings
+/.eide/log
+/.eide.usr.ctx.json
+
+# project out
+/build
+/bin
+/obj
+/out
+
+# local package/cache folders
+/.cmsis
+/.pack
+
+# python host-tool local files
+/PC_Tool/.venv
+/PC_Tool/__pycache__
+/PC_Tool/*.log
+/PC_Tool/*.png
+/PC_Tool/data
+/PC_Tool/exports
+
+# eide template
+*.ept
+*.eide-template

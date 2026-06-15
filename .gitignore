@@ -1,0 +1,3 @@
+# Local backups of the previous nested Git repositories.
+.git-backups/
+

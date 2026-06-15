@@ -1,0 +1,10 @@
+# MATLAB/Simulink generated artifacts
+slprj/
+*_ert_rtw/
+*.slxc
+*.autosave
+*.asv
+
+# Local OS/editor noise
+Thumbs.db
+.DS_Store
