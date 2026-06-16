@@ -62,26 +62,128 @@ VBUS_VALID_MIN = -0.5
 VBUS_VALID_MAX = 120.0
 PLOT_WINDOW_MIN = 0.05
 PLOT_WINDOW_MAX = 120.0
+PLOT_GRID_ALPHA_LIGHT = 0.36
+PLOT_GRID_ALPHA_DARK = 0.24
+PLOT_PANELS = {
+    "state": {
+        "title": "State / Control",
+        "channels": ("theta", "speed", "ref", "tcmp1", "tcmp2", "tcmp3", "foc_state"),
+        "axes": ("value",),
+    },
+    "measure": {
+        "title": "Current / Voltage",
+        "channels": ("ia", "ib", "ic", "id", "iq", "id_ref", "iq_ref", "ud", "uq", "vbus"),
+        "axes": ("value",),
+    },
+}
 PLOT_DEFAULT_WINDOWS = {
-    "current": 0.65,
-    "theta": 0.65,
-    "speed": 8.0,
-    "voltage": 8.0,
+    "state": 0.65,
+    "measure": 0.65,
 }
 PLOT_MAX_VISIBLE_POINTS = {
-    "current": 5000,
-    "theta": 5000,
-    "speed": 3000,
-    "voltage": 3000,
+    "state": 6000,
+    "measure": 6000,
 }
 PLOT_Y_MIN_SPANS = {
-    "current": 0.1,
-    "theta": 0.5,
-    "speed": 5.0,
-    "voltage": 0.5,
+    "state": 0.5,
+    "measure": 0.1,
 }
 THETA_PLOT_Y_MIN = -1.0
 THETA_PLOT_Y_MAX = 7.0
+CHANNEL_SHORT_LABELS = {
+    "ia": "Ia",
+    "ib": "Ib",
+    "ic": "Ic",
+    "theta": "θ",
+    "speed": "Speed",
+    "ref": "Ref",
+    "vbus": "Vbus",
+    "id": "Id",
+    "iq": "Iq",
+    "id_ref": "Id ref",
+    "iq_ref": "Iq ref",
+    "ud": "Ud",
+    "uq": "Uq",
+    "tcmp1": "T1",
+    "tcmp2": "T2",
+    "tcmp3": "T3",
+    "foc_state": "FOC",
+}
+CHANNEL_COLORS = {
+    "ia": "#d96a78",
+    "ib": "#47b8ac",
+    "ic": "#6b98d6",
+    "theta": "#9a8fe3",
+    "speed": "#5aa7bf",
+    "ref": "#d0a24a",
+    "vbus": "#a488d4",
+    "id": "#8d99aa",
+    "iq": "#69aa9b",
+    "id_ref": "#adb5c2",
+    "iq_ref": "#76ad84",
+    "ud": "#cb8756",
+    "uq": "#c36b66",
+    "tcmp1": "#9a8fe3",
+    "tcmp2": "#a68ad0",
+    "tcmp3": "#b596cf",
+    "foc_state": "#818da0",
+}
+CHANNEL_AXIS_KEYS = {
+    "ia": "A",
+    "ib": "A",
+    "ic": "A",
+    "id": "A",
+    "iq": "A",
+    "id_ref": "A",
+    "iq_ref": "A",
+    "ud": "V",
+    "uq": "V",
+    "vbus": "V",
+    "theta": "rad",
+    "speed": "rpm",
+    "ref": "rpm",
+    "tcmp1": "count",
+    "tcmp2": "count",
+    "tcmp3": "count",
+    "foc_state": "state",
+}
+CHANNEL_PANEL_KEYS = {
+    channel_key: panel_key
+    for panel_key, panel in PLOT_PANELS.items()
+    for channel_key in panel["channels"]
+}
+
+
+def rgba_from_hex(hex_color, alpha):
+    color = QtGui.QColor(hex_color)
+    return f"rgba({color.red()}, {color.green()}, {color.blue()}, {alpha})"
+
+
+def channel_pill_style(hex_color):
+    idle_bg = rgba_from_hex(hex_color, 18)
+    idle_border = rgba_from_hex(hex_color, 92)
+    active_bg = rgba_from_hex(hex_color, 168)
+    active_border = rgba_from_hex(hex_color, 220)
+    return f"""
+    QPushButton#channelPill {{
+        background: {idle_bg};
+        border: 1px solid {idle_border};
+        border-radius: 15px;
+        color: {hex_color};
+        font-weight: 700;
+        padding: 6px 12px;
+        min-height: 18px;
+        text-align: left;
+    }}
+    QPushButton#channelPill:checked {{
+        background: {active_bg};
+        border-color: {active_border};
+        color: #ffffff;
+    }}
+    QPushButton#channelPill:hover {{
+        border-color: {active_border};
+    }}
+    """
 
 
 def port_name_from_combo_text(text):
@@ -224,6 +326,32 @@ CHANNELS = [
     Channel("tcmp3", "Tcmp3", "count", "#a855f7", "voltage", False),
     Channel("foc_state", "FOC_state", "", "#475569", "speed", False),
 ]
+
+CHANNELS = [
+    Channel(
+        channel.key,
+        CHANNEL_SHORT_LABELS[channel.key],
+        CHANNEL_AXIS_KEYS[channel.key],
+        CHANNEL_COLORS[channel.key],
+        CHANNEL_PANEL_KEYS[channel.key],
+        channel.default_visible,
+    )
+    for channel in CHANNELS
+]
+CHANNEL_BY_KEY = {channel.key: channel for channel in CHANNELS}
+PRIMARY_CARD_KEYS = ("ia", "ib", "ic", "theta", "speed", "ref", "vbus")
+DIAGNOSTIC_VALUE_KEYS = (
+    "id",
+    "iq",
+    "id_ref",
+    "iq_ref",
+    "ud",
+    "uq",
+    "tcmp1",
+    "tcmp2",
+    "tcmp3",
+    "foc_state",
+)
 
 class WorkerSignals(QtCore.QObject):
     status = QtCore.Signal(str)
@@ -383,7 +511,8 @@ class TelemetryCard(QtWidgets.QFrame):
         super().__init__()
         self.channel = channel
         self.setObjectName("telemetryCard")
-        self.setMinimumHeight(74)
+        self.setMinimumHeight(54)
+        self.setMaximumHeight(62)
 
         stripe = QtWidgets.QFrame()
         stripe.setFixedWidth(5)
@@ -396,15 +525,20 @@ class TelemetryCard(QtWidgets.QFrame):
         self.unit = QtWidgets.QLabel(channel.unit)
         self.unit.setObjectName("cardUnit")
 
+        value_row = QtWidgets.QHBoxLayout()
+        value_row.setSpacing(6)
+        value_row.addWidget(self.value)
+        value_row.addWidget(self.unit)
+        value_row.addStretch(1)
+
         text_layout = QtWidgets.QVBoxLayout()
-        text_layout.setContentsMargins(10, 7, 6, 7)
-        text_layout.setSpacing(1)
+        text_layout.setContentsMargins(10, 4, 6, 4)
+        text_layout.setSpacing(0)
         text_layout.addWidget(self.title)
-        text_layout.addWidget(self.value)
-        text_layout.addWidget(self.unit)
+        text_layout.addLayout(value_row)
 
         layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setContentsMargins(10, 6, 10, 6)
         layout.setSpacing(0)
         layout.addWidget(stripe)
         layout.addLayout(text_layout)
@@ -414,6 +548,43 @@ class TelemetryCard(QtWidgets.QFrame):
             self.value.setText(f"{value:.4g}")
         else:
             self.value.setText("--")
+
+
+class SummaryCard(QtWidgets.QFrame):
+    def __init__(self, title, rows):
+        super().__init__()
+        self.rows = rows
+        self.value_labels = {}
+        self.setObjectName("summaryCard")
+        self.setMinimumHeight(56)
+        self.setMaximumHeight(68)
+
+        self.title = QtWidgets.QLabel(title)
+        self.title.setObjectName("summaryTitle")
+
+        values_layout = QtWidgets.QHBoxLayout()
+        values_layout.setSpacing(8)
+        for key, label, unit in rows:
+            value = QtWidgets.QLabel("--")
+            value.setObjectName("summaryValue")
+            self.value_labels[key] = (value, label, unit)
+            values_layout.addWidget(value)
+        values_layout.addStretch(1)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(12, 7, 12, 7)
+        layout.setSpacing(2)
+        layout.addWidget(self.title)
+        layout.addLayout(values_layout)
+
+    def set_values(self, values):
+        for key, (label_widget, label, unit) in self.value_labels.items():
+            value = values.get(key, float("nan"))
+            if math.isfinite(value):
+                suffix = f" {unit}" if unit else ""
+                label_widget.setText(f"{label} {value:.4g}{suffix}")
+            else:
+                label_widget.setText(f"{label} --")
 
 
 class MyFocHostWindow(QtWidgets.QMainWindow):
@@ -432,12 +603,22 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         self.history = {channel.key: deque(maxlen=HISTORY_LEN) for channel in CHANNELS}
         self.curves = {}
         self.plot_items = {}
+        self.plot_areas = {}
+        self.plot_axis_views = {}
+        self.plot_axis_items = {}
+        self.plot_axis_for_channel = {}
         self.legends = {}
         self.channel_checks = {}
+        self.channel_pill_layouts = {}
         self.plot_window_spins = {}
         self.plot_follow_latest = {}
         self.plot_auto_y = {}
         self.cards = {}
+        self.summary_cards = []
+        self.diagnostic_value_labels = {}
+        self.diagnostic_chips = {}
+        self.main_scroll = None
+        self.sidebar_scroll = None
         self.t0 = None
         self.connected = False
         self.paused = False
@@ -493,6 +674,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         sidebar = self._build_sidebar()
         main_panel = self._build_main_panel()
         root_layout.addWidget(sidebar)
+        self.main_scroll = None
         root_layout.addWidget(main_panel, 1)
         self._apply_theme()
 
@@ -502,15 +684,17 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         container.setFixedWidth(370)
 
         scroll = QtWidgets.QScrollArea()
+        self.sidebar_scroll = scroll
         scroll.setObjectName("sidebarScroll")
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         scroll.setWidget(container)
 
         layout = QtWidgets.QVBoxLayout(container)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(12)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(7)
 
         title = QtWidgets.QLabel("MyFOC_NFlux")
         title.setObjectName("appTitle")
@@ -522,18 +706,20 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         layout.addWidget(self._connection_group())
         layout.addWidget(self._control_group())
         layout.addWidget(self._plot_group())
-        layout.addWidget(self._logging_group())
-        layout.addWidget(self._command_group(), 1)
+        layout.addWidget(self._command_group())
+        layout.addStretch(1)
         return scroll
 
     def _connection_group(self):
         group = QtWidgets.QGroupBox("串口连接")
         form = QtWidgets.QGridLayout(group)
-        form.setHorizontalSpacing(8)
-        form.setVerticalSpacing(8)
+        form.setContentsMargins(8, 8, 8, 8)
+        form.setHorizontalSpacing(6)
+        form.setVerticalSpacing(6)
 
         self.port_combo = QtWidgets.QComboBox()
-        self.port_combo.setMinimumHeight(38)
+        self.port_combo.setObjectName("flatCombo")
+        self.port_combo.setFixedHeight(30)
         self.port_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.port_combo.setMinimumContentsLength(24)
         self.port_combo.setEditable(True)
@@ -542,7 +728,8 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         self.connect_button = QtWidgets.QPushButton("连接")
         self.connect_button.setObjectName("primaryButton")
         self.baud_box = QtWidgets.QComboBox()
-        self.baud_box.setMinimumHeight(38)
+        self.baud_box.setObjectName("flatCombo")
+        self.baud_box.setFixedHeight(30)
         for baud in ["2000000", "115200", "921600", "460800"]:
             self.baud_box.addItem(baud)
         self.baud_box.setEditable(True)
@@ -560,13 +747,14 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
     def _control_group(self):
         group = QtWidgets.QGroupBox("电机控制")
         layout = QtWidgets.QVBoxLayout(group)
-        layout.setSpacing(8)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
 
         buttons = QtWidgets.QHBoxLayout()
-        buttons.setSpacing(10)
-        self.run_button = QtWidgets.QPushButton("启动 RUN=1")
+        buttons.setSpacing(8)
+        self.run_button = QtWidgets.QPushButton("启动")
         self.run_button.setObjectName("runButton")
-        self.stop_button = QtWidgets.QPushButton("停止 RUN=0")
+        self.stop_button = QtWidgets.QPushButton("停止")
         self.stop_button.setObjectName("stopButton")
         buttons.addWidget(self.run_button)
         buttons.addWidget(self.stop_button)
@@ -575,12 +763,13 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         speed_row = QtWidgets.QHBoxLayout()
         speed_row.addWidget(QtWidgets.QLabel("目标速度"))
         self.speed_spin = QtWidgets.QDoubleSpinBox()
-        self.speed_spin.setMinimumHeight(38)
+        self.speed_spin.setFixedHeight(30)
         self.speed_spin.setRange(SPEED_MIN, SPEED_MAX)
         self.speed_spin.setDecimals(1)
         self.speed_spin.setSingleStep(10.0)
         self.speed_spin.setValue(600.0)
         self.speed_spin.setSuffix(" rpm")
+        self.speed_spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.ButtonSymbols.NoButtons)
         speed_row.addWidget(self.speed_spin)
         layout.addLayout(speed_row)
 
@@ -590,7 +779,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.speed_slider)
 
         send_row = QtWidgets.QHBoxLayout()
-        send_row.setSpacing(10)
+        send_row.setSpacing(8)
         self.speed_send_button = QtWidgets.QPushButton("下发速度")
         self.speed_send_button.setObjectName("primaryButton")
         self.demo_button = QtWidgets.QPushButton("演示数据")
@@ -603,68 +792,40 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
     def _plot_group(self):
         group = QtWidgets.QGroupBox("曲线与通道")
         layout = QtWidgets.QVBoxLayout(group)
-        layout.setSpacing(8)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(5)
 
         controls = QtWidgets.QGridLayout()
-        controls.setHorizontalSpacing(10)
-        controls.setVerticalSpacing(8)
+        controls.setHorizontalSpacing(8)
+        controls.setVerticalSpacing(4)
         self.auto_scroll_check = QtWidgets.QCheckBox("跟随最新数据")
         self.auto_scroll_check.setChecked(True)
         self.auto_scale_check = QtWidgets.QCheckBox("Y 轴自动缩放")
         self.auto_scale_check.setChecked(True)
         self.grid_check = QtWidgets.QCheckBox("网格")
         self.grid_check.setChecked(True)
-        self.pause_check = QtWidgets.QCheckBox("暂停绘图")
 
         controls.addWidget(self.auto_scroll_check, 0, 0, 1, 2)
         controls.addWidget(self.auto_scale_check, 1, 0, 1, 2)
-        controls.addWidget(self.grid_check, 2, 0)
-        controls.addWidget(self.pause_check, 2, 1)
+        controls.addWidget(self.grid_check, 2, 0, 1, 2)
         window_labels = {
-            "current": "电流窗",
-            "theta": "角度窗",
-            "speed": "速度窗",
-            "voltage": "电压窗",
+            "state": "状态窗",
+            "measure": "测量窗",
         }
-        for row, plot_key in enumerate(("current", "theta", "speed", "voltage"), start=3):
+        for row, plot_key in enumerate(PLOT_PANELS, start=3):
             spin = QtWidgets.QDoubleSpinBox()
-            spin.setMinimumHeight(36)
+            spin.setFixedHeight(30)
             spin.setRange(PLOT_WINDOW_MIN, PLOT_WINDOW_MAX)
             spin.setDecimals(2)
             spin.setSingleStep(0.05 if PLOT_DEFAULT_WINDOWS[plot_key] < 1.0 else 1.0)
             spin.setValue(PLOT_DEFAULT_WINDOWS[plot_key])
             spin.setSuffix(" s")
+            spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.ButtonSymbols.NoButtons)
             self.plot_window_spins[plot_key] = spin
             controls.addWidget(QtWidgets.QLabel(window_labels[plot_key]), row, 0)
             controls.addWidget(spin, row, 1)
         layout.addLayout(controls)
 
-        channel_grid = QtWidgets.QGridLayout()
-        channel_grid.setHorizontalSpacing(12)
-        channel_grid.setVerticalSpacing(8)
-        for index, channel in enumerate(CHANNELS):
-            check = QtWidgets.QCheckBox(channel.label)
-            check.setChecked(channel.default_visible)
-            check.setStyleSheet(f"QCheckBox {{ color: {channel.color}; font-weight: 600; }}")
-            self.channel_checks[channel.key] = check
-            channel_grid.addWidget(check, index // 2, index % 2)
-        layout.addLayout(channel_grid)
-
-        select_row = QtWidgets.QHBoxLayout()
-        select_row.setSpacing(8)
-        self.select_all_button = QtWidgets.QPushButton("全选")
-        self.select_none_button = QtWidgets.QPushButton("全不选")
-        self.reset_view_button = QtWidgets.QPushButton("重置视图")
-        self.clear_data_button = QtWidgets.QPushButton("清空曲线")
-        select_row.addWidget(self.select_all_button)
-        select_row.addWidget(self.select_none_button)
-        layout.addLayout(select_row)
-
-        view_row = QtWidgets.QHBoxLayout()
-        view_row.setSpacing(8)
-        view_row.addWidget(self.reset_view_button)
-        view_row.addWidget(self.clear_data_button)
-        layout.addLayout(view_row)
         return group
 
     def _logging_group(self):
@@ -681,12 +842,15 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
     def _command_group(self):
         group = QtWidgets.QGroupBox("命令窗口")
         layout = QtWidgets.QVBoxLayout(group)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
         self.command_edit = QtWidgets.QLineEdit()
-        self.command_edit.setMinimumHeight(38)
+        self.command_edit.setFixedHeight(30)
         self.command_edit.setPlaceholderText("例如 SPD=600 或 RUN=1")
         self.command_send_button = QtWidgets.QPushButton("发送命令")
         self.console = QtWidgets.QPlainTextEdit()
         self.console.setReadOnly(True)
+        self.console.setMaximumHeight(72)
         self.console.setMaximumBlockCount(300)
         self.console.setPlaceholderText("串口状态和发送记录会显示在这里")
         layout.addWidget(self.command_edit)
@@ -696,6 +860,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
 
     def _build_main_panel(self):
         panel = QtWidgets.QWidget()
+        self.main_panel = panel
         layout = QtWidgets.QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
@@ -708,22 +873,30 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         main_subtitle.setObjectName("hintText")
         title_box.addWidget(main_title)
         title_box.addWidget(main_subtitle)
-        header.addLayout(title_box)
+        header.addLayout(title_box, 1)
 
         self.theme_button = QtWidgets.QPushButton("深色主题")
         self.theme_button.setObjectName("themeButton")
         self.theme_button.setCheckable(True)
-        self.theme_button.setFixedWidth(104)
+        self.theme_button.setFixedSize(112, 48)
 
         self.rate_label = QtWidgets.QLabel("0 frame/s")
         self.rate_label.setObjectName("rateBadge")
-        header.addWidget(self.theme_button, 0, QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignTop)
-        header.addWidget(self.rate_label, 0, QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignTop)
+        self.rate_label.setMinimumHeight(36)
+        self.rate_label.setMinimumWidth(180)
+        self.rate_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        header_actions = QtWidgets.QHBoxLayout()
+        header_actions.setSpacing(12)
+        header_actions.addWidget(self.theme_button)
+        header_actions.addWidget(self.rate_label)
+        header.addLayout(header_actions, 0)
+        header.setAlignment(header_actions, QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignTop)
         layout.addLayout(header)
 
         cards = QtWidgets.QGridLayout()
-        cards.setSpacing(10)
-        for index, channel in enumerate(CHANNELS):
+        cards.setSpacing(8)
+        for index, key in enumerate(PRIMARY_CARD_KEYS):
+            channel = CHANNEL_BY_KEY[key]
             card = TelemetryCard(channel)
             self.cards[channel.key] = card
             cards.addWidget(card, index // 4, index % 4)
@@ -735,8 +908,15 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         plot_tab_layout = QtWidgets.QVBoxLayout(self.plot_tab)
         plot_tab_layout.setContentsMargins(0, 0, 0, 0)
 
+        self.plot_panel = QtWidgets.QFrame()
+        self.plot_panel.setObjectName("plotPanel")
+        plot_panel_layout = QtWidgets.QVBoxLayout(self.plot_panel)
+        plot_panel_layout.setContentsMargins(12, 12, 12, 12)
+        plot_panel_layout.setSpacing(10)
+        plot_panel_layout.addWidget(self._build_plot_toolbar())
+
         self.plot_area = pg.GraphicsLayoutWidget()
-        self.plot_area.setMinimumHeight(520)
+        self.plot_area.setMinimumHeight(680)
 
         current_plot = self.plot_area.addPlot(row=0, col=0, title="三相电流")
         theta_plot = self.plot_area.addPlot(row=0, col=1, title="磁链角")
@@ -785,19 +965,90 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
                 name=channel.label,
             )
             curve.setVisible(channel.default_visible)
-            if channel.key == "theta":
-                curve.setDownsampling(auto=False)
-            else:
-                curve.setDownsampling(auto=True, method="peak")
+            curve.setDownsampling(auto=False)
             curve.setClipToView(True)
             self.curves[channel.key] = curve
             self._install_legend_click_handler(channel)
 
-        plot_tab_layout.addWidget(self.plot_area, 1)
+        plot_panel_layout.addWidget(self.plot_area, 1)
+        plot_tab_layout.addWidget(self.plot_panel, 1)
         self.tab_widget.addTab(self.plot_tab, "实时曲线")
         self.tab_widget.addTab(self._build_reserved_control_tab(), "控制预留")
         layout.addWidget(self.tab_widget, 1)
         return panel
+
+    def _build_plot_toolbar(self):
+        self.channel_toolbar = QtWidgets.QFrame()
+        self.channel_toolbar.setObjectName("channelToolbar")
+        toolbar_layout = QtWidgets.QHBoxLayout(self.channel_toolbar)
+        toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        toolbar_layout.setSpacing(10)
+
+        self.channel_pill_scroll = QtWidgets.QScrollArea()
+        self.channel_pill_scroll.setObjectName("channelPillScroll")
+        self.channel_pill_scroll.setWidgetResizable(True)
+        self.channel_pill_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.channel_pill_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.channel_pill_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+
+        pill_host = QtWidgets.QWidget()
+        pill_host.setObjectName("channelPillHost")
+        self.channel_pill_layout = QtWidgets.QHBoxLayout(pill_host)
+        self.channel_pill_layout.setContentsMargins(0, 0, 0, 0)
+        self.channel_pill_layout.setSpacing(8)
+        for channel in CHANNELS:
+            check = QtWidgets.QCheckBox(channel.label)
+            check.setObjectName("channelPill")
+            check.setChecked(channel.default_visible)
+            check.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+            check.setStyleSheet(channel_pill_style(channel.color))
+            self.channel_checks[channel.key] = check
+            self.channel_pill_layout.addWidget(check)
+        self.channel_pill_layout.addStretch(1)
+        self.channel_pill_scroll.setWidget(pill_host)
+        toolbar_layout.addWidget(self.channel_pill_scroll, 1)
+
+        self.select_all_button = QtWidgets.QPushButton("全选")
+        self.select_none_button = QtWidgets.QPushButton("全不选")
+        self.reset_view_button = QtWidgets.QPushButton("重置视图")
+        self.clear_data_button = QtWidgets.QPushButton("清空曲线")
+        for button in (
+            self.select_all_button,
+            self.select_none_button,
+            self.reset_view_button,
+            self.clear_data_button,
+        ):
+            button.setObjectName("toolbarButton")
+            toolbar_layout.addWidget(button)
+        return self.channel_toolbar
+
+    def _build_diagnostic_tab(self):
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QGridLayout(tab)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setHorizontalSpacing(12)
+        layout.setVerticalSpacing(10)
+
+        for index, key in enumerate(DIAGNOSTIC_VALUE_KEYS):
+            channel = CHANNEL_BY_KEY[key]
+            row = index // 2
+            col = (index % 2) * 3
+
+            name = QtWidgets.QLabel(channel.label)
+            name.setObjectName("diagName")
+            value = QtWidgets.QLabel("--")
+            value.setObjectName("diagValue")
+            unit = QtWidgets.QLabel(channel.unit)
+            unit.setObjectName("diagUnit")
+            self.diagnostic_value_labels[key] = value
+
+            layout.addWidget(name, row, col)
+            layout.addWidget(value, row, col + 1)
+            layout.addWidget(unit, row, col + 2)
+
+        layout.setColumnStretch(1, 1)
+        layout.setColumnStretch(4, 1)
+        return tab
 
     def _build_reserved_control_tab(self):
         tab = QtWidgets.QWidget()
@@ -865,6 +1116,322 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         layout.setRowStretch(2, 1)
         return tab
 
+    def _build_main_panel(self):
+        panel = QtWidgets.QWidget()
+        self.main_panel = panel
+        layout = QtWidgets.QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        header = QtWidgets.QFrame()
+        header.setObjectName("mainHeader")
+        header_layout = QtWidgets.QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(12)
+        title_box = QtWidgets.QVBoxLayout()
+        title_box.setSpacing(2)
+        main_title = QtWidgets.QLabel("实时遥测")
+        main_title.setObjectName("sectionTitle")
+        main_subtitle = QtWidgets.QLabel("两幅主图共用时间轴；左侧胶囊选择曲线，右上角控制暂停、记录和主题。")
+        main_subtitle.setObjectName("removedHintText")
+        main_subtitle.setVisible(False)
+        title_box.addWidget(main_title)
+        header_layout.addLayout(title_box, 1)
+        header_layout.addWidget(self._build_plot_toolbar(), 0, QtCore.Qt.AlignmentFlag.AlignTop)
+        layout.addWidget(header)
+
+        summary_layout = QtWidgets.QHBoxLayout()
+        summary_layout.setSpacing(10)
+        summary_specs = [
+            ("Iabc", (("ia", "Ia", "A"), ("ib", "Ib", "A"), ("ic", "Ic", "A"))),
+            ("Speed", (("speed", "Obs", "rpm"), ("ref", "Ref", "rpm"))),
+            ("Flux / Bus", (("theta", "θ", "rad"), ("vbus", "Vbus", "V"))),
+            ("DQ / State", (("id", "Id", "A"), ("iq", "Iq", "A"), ("foc_state", "FOC", ""))),
+        ]
+        for title, rows in summary_specs:
+            card = SummaryCard(title, rows)
+            card.setVisible(False)
+            self.summary_cards.append(card)
+            summary_layout.addWidget(card, 1)
+        layout.addLayout(summary_layout)
+        self.summary_cards.clear()
+
+        self.tab_widget = QtWidgets.QTabWidget()
+        self.tab_widget.setObjectName("mainTabs")
+        self.plot_tab = QtWidgets.QWidget()
+        plot_tab_layout = QtWidgets.QVBoxLayout(self.plot_tab)
+        plot_tab_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.plot_panel = QtWidgets.QFrame()
+        self.plot_panel.setObjectName("plotPanel")
+        plot_panel_layout = QtWidgets.QVBoxLayout(self.plot_panel)
+        plot_panel_layout.setContentsMargins(14, 14, 14, 14)
+        plot_panel_layout.setSpacing(10)
+        for panel_key in PLOT_PANELS:
+            plot_panel_layout.addWidget(self._build_plot_row(panel_key), 1)
+
+        plot_tab_layout.addWidget(self.plot_panel, 1)
+        self.tab_widget.addTab(self.plot_tab, "实时曲线")
+        self.tab_widget.addTab(self._build_reserved_control_tab(), "控制预留")
+        layout.addWidget(self.tab_widget, 1)
+        return panel
+
+    def _build_plot_toolbar(self):
+        self.plot_toolbar = QtWidgets.QFrame()
+        self.plot_toolbar.setObjectName("plotToolbar")
+        toolbar_layout = QtWidgets.QHBoxLayout(self.plot_toolbar)
+        toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        toolbar_layout.setSpacing(8)
+        toolbar_layout.addStretch(1)
+
+        self.pause_button = QtWidgets.QPushButton()
+        self.pause_button.setObjectName("iconButton")
+        self.pause_button.setCheckable(True)
+        self.pause_button.setToolTip("暂停绘图")
+
+        self.log_button = QtWidgets.QPushButton()
+        self.log_button.setObjectName("recordButton")
+        self.log_button.setToolTip("记录 CSV")
+        self.log_label = QtWidgets.QLabel("未记录")
+        self.log_label.setVisible(False)
+
+        self.reset_view_button = QtWidgets.QPushButton()
+        self.reset_view_button.setObjectName("iconButton")
+        self.reset_view_button.setToolTip("重置视图")
+        self.clear_data_button = QtWidgets.QPushButton()
+        self.clear_data_button.setObjectName("iconButton")
+        self.clear_data_button.setToolTip("清空曲线")
+
+        self.theme_button = QtWidgets.QPushButton()
+        self.theme_button.setObjectName("iconButton")
+        self.theme_button.setCheckable(True)
+        self.theme_button.setToolTip("深色主题")
+
+        self.rate_label = QtWidgets.QLabel("0 frame/s")
+        self.rate_label.setObjectName("rateBadge")
+        self.rate_label.setMinimumHeight(36)
+        self.rate_label.setMinimumWidth(180)
+        self.rate_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+
+        for button in (
+            self.pause_button,
+            self.log_button,
+            self.reset_view_button,
+            self.clear_data_button,
+            self.theme_button,
+        ):
+            button.setFixedSize(38, 38)
+            button.setIconSize(QtCore.QSize(22, 22))
+            button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+            toolbar_layout.addWidget(button)
+        self._refresh_toolbar_icons()
+        toolbar_layout.addWidget(self.rate_label)
+        return self.plot_toolbar
+
+    def _toolbar_icon_color(self):
+        return "#d4deef" if self.dark_theme else "#475569"
+
+    def _make_toolbar_icon(self, kind, color):
+        pixmap = QtGui.QPixmap(24, 24)
+        pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+
+        painter = QtGui.QPainter(pixmap)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        icon_color = QtGui.QColor(color)
+        pen = QtGui.QPen(icon_color, 2.2)
+        pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(QtCore.Qt.PenJoinStyle.RoundJoin)
+
+        if kind == "pause":
+            painter.setPen(QtCore.Qt.PenStyle.NoPen)
+            painter.setBrush(QtGui.QBrush(icon_color))
+            painter.drawRoundedRect(QtCore.QRectF(7.2, 6.0, 3.4, 12.0), 1.2, 1.2)
+            painter.drawRoundedRect(QtCore.QRectF(13.4, 6.0, 3.4, 12.0), 1.2, 1.2)
+        elif kind == "play":
+            painter.setPen(QtCore.Qt.PenStyle.NoPen)
+            painter.setBrush(QtGui.QBrush(icon_color))
+            painter.drawPolygon(
+                QtGui.QPolygonF(
+                    [
+                        QtCore.QPointF(8.0, 5.8),
+                        QtCore.QPointF(18.0, 12.0),
+                        QtCore.QPointF(8.0, 18.2),
+                    ]
+                )
+            )
+        elif kind == "record":
+            painter.setPen(QtCore.Qt.PenStyle.NoPen)
+            painter.setBrush(QtGui.QBrush(QtGui.QColor("#e05264")))
+            painter.drawEllipse(QtCore.QPointF(12.0, 12.0), 5.0, 5.0)
+        elif kind == "reset":
+            painter.setPen(pen)
+            painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+            painter.drawArc(QtCore.QRectF(6.0, 6.0, 12.0, 12.0), 25 * 16, 290 * 16)
+            painter.drawPolyline(
+                QtGui.QPolygonF(
+                    [
+                        QtCore.QPointF(7.0, 6.8),
+                        QtCore.QPointF(6.2, 10.6),
+                        QtCore.QPointF(10.1, 9.7),
+                    ]
+                )
+            )
+        elif kind == "clear":
+            painter.setPen(pen)
+            painter.drawLine(QtCore.QPointF(7.4, 7.4), QtCore.QPointF(16.6, 16.6))
+            painter.drawLine(QtCore.QPointF(16.6, 7.4), QtCore.QPointF(7.4, 16.6))
+        elif kind == "sun":
+            painter.setPen(pen)
+            painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QtCore.QPointF(12.0, 12.0), 3.6, 3.6)
+            for angle in range(0, 360, 45):
+                radians = math.radians(angle)
+                inner = QtCore.QPointF(12.0 + math.cos(radians) * 6.2, 12.0 + math.sin(radians) * 6.2)
+                outer = QtCore.QPointF(12.0 + math.cos(radians) * 8.8, 12.0 + math.sin(radians) * 8.8)
+                painter.drawLine(inner, outer)
+        else:
+            painter.setPen(QtCore.Qt.PenStyle.NoPen)
+            painter.setBrush(QtGui.QBrush(icon_color))
+            painter.drawEllipse(QtCore.QRectF(6.0, 4.0, 12.5, 16.0))
+            painter.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_Clear)
+            painter.drawEllipse(QtCore.QRectF(10.2, 2.9, 12.5, 16.0))
+
+        painter.end()
+        return QtGui.QIcon(pixmap)
+
+    def _set_toolbar_button_icon(self, button, kind):
+        button.setText("")
+        button.setIcon(self._make_toolbar_icon(kind, self._toolbar_icon_color()))
+        button.setIconSize(QtCore.QSize(22, 22))
+
+    def _refresh_toolbar_icons(self):
+        if not hasattr(self, "pause_button"):
+            return
+        self._set_toolbar_button_icon(self.pause_button, "play" if self.paused else "pause")
+        self._set_toolbar_button_icon(self.log_button, "record")
+        self._set_toolbar_button_icon(self.reset_view_button, "reset")
+        self._set_toolbar_button_icon(self.clear_data_button, "clear")
+        self._set_toolbar_button_icon(self.theme_button, "sun" if self.dark_theme else "moon")
+
+    def _build_plot_row(self, panel_key):
+        panel = PLOT_PANELS[panel_key]
+        row = QtWidgets.QFrame()
+        row.setObjectName("plotCard")
+        row_layout = QtWidgets.QHBoxLayout(row)
+        row_layout.setContentsMargins(12, 10, 12, 10)
+        row_layout.setSpacing(10)
+
+        pill_column = QtWidgets.QFrame()
+        pill_column.setObjectName("channelPillColumn")
+        pill_layout = QtWidgets.QVBoxLayout(pill_column)
+        pill_layout.setContentsMargins(0, 8, 0, 8)
+        pill_layout.setSpacing(8)
+        self.channel_pill_layouts[panel_key] = pill_layout
+        pill_layout.addStretch(1)
+        for channel_key in panel["channels"]:
+            channel = CHANNEL_BY_KEY[channel_key]
+            check = QtWidgets.QPushButton(f"\u25cf {CHANNEL_SHORT_LABELS[channel_key]}")
+            check.setObjectName("channelPill")
+            check.setCheckable(True)
+            check.setMinimumWidth(96)
+            check.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+            check.setChecked(channel.default_visible)
+            check.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+            check.setStyleSheet(channel_pill_style(channel.color))
+            self.channel_checks[channel.key] = check
+            pill_layout.addWidget(check)
+        pill_layout.addStretch(1)
+        row_layout.addWidget(pill_column, 0)
+
+        plot_area = pg.GraphicsLayoutWidget()
+        plot_area.setObjectName("plotCanvas")
+        plot_area.setMinimumHeight(230)
+        plot_item = plot_area.addPlot(row=0, col=0, title=panel["title"])
+        self.plot_areas[panel_key] = plot_area
+        self._setup_panel_plot(panel_key, plot_item)
+        row_layout.addWidget(plot_area, 1)
+        return row
+
+    def _setup_panel_plot(self, panel_key, plot_item):
+        panel = PLOT_PANELS[panel_key]
+        primary_axis = "value"
+        self.plot_items[panel_key] = plot_item
+        self.plot_axis_views[panel_key] = {primary_axis: plot_item.getViewBox()}
+        self.plot_axis_items[panel_key] = {primary_axis: plot_item.getAxis("left")}
+
+        plot_item.showGrid(x=True, y=True, alpha=self._plot_grid_alpha())
+        plot_item.setMenuEnabled(True)
+        plot_item.getViewBox().setMouseEnabled(x=True, y=True)
+        plot_item.setLabel("left", "Value")
+        plot_item.setLabel("bottom", "Time", units="s")
+        left_axis = plot_item.getAxis("left")
+        if hasattr(left_axis, "enableAutoSIPrefix"):
+            left_axis.enableAutoSIPrefix(False)
+
+        view_box = plot_item.getViewBox()
+        if hasattr(view_box, "sigRangeChangedManually"):
+            view_box.sigRangeChangedManually.connect(
+                lambda *args, plot_key=panel_key: self._on_plot_range_changed_manually(plot_key)
+            )
+
+        for channel_key in panel["channels"]:
+            channel = CHANNEL_BY_KEY[channel_key]
+            curve = pg.PlotDataItem([], [], pen=pg.mkPen(channel.color, width=2.0), name=channel.label)
+            curve.setVisible(channel.default_visible)
+            curve.setDownsampling(auto=False)
+            curve.setClipToView(True)
+            plot_item.addItem(curve)
+            self.plot_axis_for_channel[channel.key] = primary_axis
+            self.curves[channel.key] = curve
+
+        self.plot_follow_latest[panel_key] = True
+        self.plot_auto_y[panel_key] = True
+
+    def _sync_axis_views(self, panel_key):
+        plot_item = self.plot_items.get(panel_key)
+        if plot_item is None:
+            return
+        source_view = plot_item.getViewBox()
+        for axis_key, view in self.plot_axis_views.get(panel_key, {}).items():
+            if view is source_view:
+                continue
+            view.setGeometry(source_view.sceneBoundingRect())
+            view.linkedViewChanged(source_view, view.XAxis)
+
+    def _build_diagnostic_tab(self):
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QGridLayout(tab)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setHorizontalSpacing(8)
+        layout.setVerticalSpacing(8)
+
+        for index, key in enumerate(DIAGNOSTIC_VALUE_KEYS):
+            channel = CHANNEL_BY_KEY[key]
+            chip = QtWidgets.QFrame()
+            chip.setObjectName("diagnosticChip")
+            chip.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
+            chip.setMinimumSize(150, 34)
+            chip.setMaximumHeight(34)
+            chip_layout = QtWidgets.QHBoxLayout(chip)
+            chip_layout.setContentsMargins(10, 5, 10, 5)
+            chip_layout.setSpacing(6)
+            name = QtWidgets.QLabel(CHANNEL_SHORT_LABELS[key])
+            name.setObjectName("diagName")
+            value = QtWidgets.QLabel("--")
+            value.setObjectName("diagValue")
+            unit = QtWidgets.QLabel(channel.unit)
+            unit.setObjectName("diagUnit")
+            chip_layout.addWidget(name)
+            chip_layout.addWidget(value)
+            if channel.unit:
+                chip_layout.addWidget(unit)
+            self.diagnostic_chips[key] = chip
+            self.diagnostic_value_labels[key] = value
+            layout.addWidget(chip, index // 4, index % 4)
+        layout.setColumnStretch(4, 1)
+        layout.setRowStretch((len(DIAGNOSTIC_VALUE_KEYS) + 3) // 4, 1)
+        return tab
+
     def _connect_ui(self):
         self.refresh_button.clicked.connect(self.refresh_ports)
         self.connect_button.clicked.connect(self.toggle_connection)
@@ -877,12 +1444,14 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         self.log_button.clicked.connect(self.toggle_logging)
         self.theme_button.toggled.connect(self._set_dark_theme)
         self.auto_scroll_check.toggled.connect(self._set_follow_latest)
-        self.pause_check.toggled.connect(self._set_paused)
+        self.pause_button.toggled.connect(self._set_paused)
         self.grid_check.toggled.connect(self._set_grid_visible)
         self.auto_scale_check.toggled.connect(self._apply_auto_scale)
         self.reset_view_button.clicked.connect(self.reset_view)
-        self.select_all_button.clicked.connect(lambda: self._set_all_channels(True))
-        self.select_none_button.clicked.connect(lambda: self._set_all_channels(False))
+        if hasattr(self, "select_all_button"):
+            self.select_all_button.clicked.connect(lambda: self._set_all_channels(True))
+        if hasattr(self, "select_none_button"):
+            self.select_none_button.clicked.connect(lambda: self._set_all_channels(False))
         self.clear_data_button.clicked.connect(self.clear_data)
 
         self.speed_slider.valueChanged.connect(lambda value: self.speed_spin.setValue(float(value)))
@@ -923,32 +1492,43 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
 
     def _set_dark_theme(self, checked):
         self.dark_theme = checked
-        self.theme_button.setText("浅色主题" if checked else "深色主题")
+        self.theme_button.setToolTip("浅色主题" if checked else "深色主题")
         self._apply_theme()
+
+    def _plot_grid_alpha(self):
+        return PLOT_GRID_ALPHA_DARK if self.dark_theme else PLOT_GRID_ALPHA_LIGHT
 
     def _apply_theme(self):
         self.setStyleSheet(self._style_sheet())
-        plot_bg = "#0f172a" if self.dark_theme else "#ffffff"
-        plot_fg = "#dbeafe" if self.dark_theme else "#334155"
-        grid_alpha = 0.18 if self.dark_theme else 0.25
+        self._refresh_toolbar_icons()
+        plot_bg = "#151c2b" if self.dark_theme else "#ffffff"
+        axis_pen = "#273348" if self.dark_theme else "#e2e8f0"
+        tick_pen = "#7c889b" if self.dark_theme else "#94a3b8"
+        title_pen = "#e5e7eb" if self.dark_theme else "#475569"
+        grid_alpha = self._plot_grid_alpha()
 
-        if hasattr(self, "plot_area"):
-            self.plot_area.setBackground(plot_bg)
+        for plot_area in self.plot_areas.values():
+            plot_area.setBackground(plot_bg)
 
         for key, plot_item in self.plot_items.items():
             plot_item.getViewBox().setBackgroundColor(plot_bg)
             plot_item.showGrid(x=self.grid_check.isChecked(), y=self.grid_check.isChecked(), alpha=grid_alpha)
             for axis_name in ("left", "bottom"):
                 axis = plot_item.getAxis(axis_name)
-                axis.setPen(pg.mkPen(plot_fg))
-                axis.setTextPen(pg.mkPen(plot_fg))
+                axis.setPen(pg.mkPen(axis_pen))
+                axis.setTextPen(pg.mkPen(tick_pen))
+                axis.setStyle(tickTextOffset=6)
+            for axis in self.plot_axis_items.get(key, {}).values():
+                axis.setPen(pg.mkPen(axis_pen))
+                axis.setTextPen(pg.mkPen(tick_pen))
+                axis.setStyle(tickTextOffset=6)
             title = plot_item.titleLabel
             if title is not None:
-                title.setText(title.text, color=plot_fg)
+                title.setText(title.text, color=title_pen)
 
         for legend in self.legends.values():
             for _, label in legend.items:
-                label.setText(label.text, color=plot_fg)
+                label.setText(label.text, color=tick_pen)
 
     def refresh_ports(self, force_status=False):
         if self.connected:
@@ -1086,7 +1666,8 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         self.log_writer = csv.writer(self.log_file)
         self.log_writer.writerow(CSV_HEADERS)
         self.logging = True
-        self.log_button.setText("停止记录")
+        self.log_button.setText("\u25cf")
+        self.log_button.setToolTip("停止记录 CSV")
         self.log_label.setText(path)
         self.append_console(f"CSV 记录开始：{path}")
 
@@ -1097,7 +1678,8 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
             self.log_file.close()
         self.log_file = None
         self.log_writer = None
-        self.log_button.setText("开始记录 CSV")
+        self.log_button.setText("\u25cf")
+        self.log_button.setToolTip("记录 CSV")
         if was_logging:
             self.append_console("CSV 记录停止")
 
@@ -1111,6 +1693,9 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
 
     def _set_paused(self, checked):
         self.paused = checked
+        if hasattr(self, "pause_button"):
+            self._set_toolbar_button_icon(self.pause_button, "play" if checked else "pause")
+            self.pause_button.setToolTip("继续绘图" if checked else "暂停绘图")
 
     def _set_follow_latest(self, checked):
         if checked:
@@ -1126,15 +1711,10 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
     def _on_plot_range_changed_manually(self, plot_key):
         if self.programmatic_range_change:
             return
-        if self.auto_scroll_check.isChecked():
-            self.plot_follow_latest[plot_key] = True
-            self._sync_plot_window_from_view(plot_key)
-        else:
-            self.plot_follow_latest[plot_key] = False
-
-        if not self.auto_scale_check.isChecked():
-            self.plot_auto_y[plot_key] = False
-            self.plot_items[plot_key].enableAutoRange(axis="y", enable=False)
+        self.plot_follow_latest[plot_key] = False
+        self._sync_plot_window_from_view(plot_key)
+        self.plot_auto_y[plot_key] = False
+        self.plot_items[plot_key].enableAutoRange(axis="y", enable=False)
 
     def _sync_plot_window_from_view(self, plot_key):
         spin = self.plot_window_spins.get(plot_key)
@@ -1151,7 +1731,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
             spin.blockSignals(False)
 
     def _set_grid_visible(self, checked):
-        grid_alpha = 0.18 if self.dark_theme else 0.25
+        grid_alpha = self._plot_grid_alpha()
         for plot_item in self.plot_items.values():
             plot_item.showGrid(x=checked, y=checked, alpha=grid_alpha)
 
@@ -1202,7 +1782,11 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
     def _update_channel_visibility(self):
         for key, curve in self.curves.items():
             curve.setVisible(self.channel_checks[key].isChecked())
-        if self.auto_scale_check.isChecked():
+        if self.time_history:
+            self._update_plot()
+            if self.auto_scale_check.isChecked():
+                self._refresh_visible_y_ranges(force=True)
+        elif self.auto_scale_check.isChecked():
             self._refresh_visible_y_ranges(force=True)
 
     def _push_demo_frame(self):
@@ -1364,6 +1948,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
                     continue
                 left, right = ranges[plot_key]
                 plot_item.setXRange(left, right, padding=0.0)
+                self._sync_axis_views(plot_key)
         finally:
             self.programmatic_range_change = False
 
@@ -1387,20 +1972,15 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
     def _apply_visible_y_ranges(self, x, y_arrays, ranges):
         self.programmatic_range_change = True
         try:
-            for plot_key, plot_item in self.plot_items.items():
+            for plot_key in self.plot_items:
                 if not self.auto_scale_check.isChecked() or not self.plot_auto_y.get(plot_key, True):
-                    continue
-                if plot_key == "theta":
-                    plot_item.setYRange(THETA_PLOT_Y_MIN, THETA_PLOT_Y_MAX, padding=0.0)
                     continue
 
                 left, right = ranges[plot_key]
-                visible_parts = []
                 mask = (x >= left) & (x <= right)
-                for channel in CHANNELS:
-                    if channel.plot != plot_key:
-                        continue
-                    y = y_arrays.get(channel.key)
+                visible_parts = []
+                for channel_key in PLOT_PANELS[plot_key]["channels"]:
+                    y = y_arrays.get(channel_key)
                     if y is not None and len(y) == len(x):
                         visible_parts.append(y[mask])
                 if not visible_parts:
@@ -1408,7 +1988,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
 
                 y_range = padded_y_range(np.concatenate(visible_parts), PLOT_Y_MIN_SPANS[plot_key])
                 if y_range is not None:
-                    plot_item.setYRange(y_range[0], y_range[1], padding=0.0)
+                    self.plot_items[plot_key].getViewBox().setYRange(y_range[0], y_range[1], padding=0.0)
         finally:
             self.programmatic_range_change = False
 
@@ -1426,8 +2006,13 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         self._apply_plot_x_ranges(ranges, only_following=True)
 
     def _update_cards(self):
+        for card in self.summary_cards:
+            card.set_values(self.last_values)
         for key, card in self.cards.items():
             card.set_value(self.last_values[key])
+        for key, label in self.diagnostic_value_labels.items():
+            value = self.last_values.get(key, float("nan"))
+            label.setText(f"{value:.4g}" if math.isfinite(value) else "--")
 
     def _update_rate(self):
         now = time.perf_counter()
@@ -1456,14 +2041,18 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
             #sidebar {
                 background: #111827;
                 border: 1px solid #334155;
-                border-radius: 8px;
+                border-radius: 18px;
             }
             #sidebarScroll {
                 background: transparent;
                 border: none;
             }
+            #mainScroll {
+                background: transparent;
+                border: none;
+            }
             #appTitle {
-                font-size: 22px;
+                font-size: 20px;
                 font-weight: 800;
                 color: #f8fafc;
             }
@@ -1476,17 +2065,18 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
                 color: #f8fafc;
             }
             #rateBadge {
-                background: #2563eb;
-                color: #ffffff;
-                border-radius: 6px;
+                background: #1b2637;
+                color: #d4deef;
+                border: 1px solid #2f3d52;
+                border-radius: 14px;
                 padding: 6px 10px;
                 font-weight: 700;
             }
             QGroupBox {
                 border: 1px solid #334155;
-                border-radius: 7px;
-                margin-top: 10px;
-                padding: 10px;
+                border-radius: 14px;
+                margin-top: 8px;
+                padding: 8px;
                 background: #111827;
                 color: #e5e7eb;
                 font-weight: 700;
@@ -1498,26 +2088,55 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
                 color: #cbd5e1;
             }
             QTabWidget::pane {
-                border: 1px solid #334155;
-                background: #0f172a;
+                border: none;
+                border-top: 1px solid #263244;
+                background: transparent;
             }
             QTabBar::tab {
-                background: #1e293b;
-                color: #cbd5e1;
-                border: 1px solid #334155;
-                padding: 7px 12px;
+                background: transparent;
+                color: #8b97aa;
+                border: none;
+                border-bottom: 3px solid transparent;
+                padding: 12px 22px 10px 22px;
+                margin-right: 8px;
+                font-size: 11pt;
             }
             QTabBar::tab:selected {
-                background: #334155;
-                color: #ffffff;
+                color: #8b7cf6;
+                border-bottom-color: #8b7cf6;
+            }
+            QTabBar::tab:hover {
+                color: #dbeafe;
             }
             QLineEdit, QComboBox, QDoubleSpinBox, QPlainTextEdit {
                 background: #0f172a;
                 color: #e5e7eb;
-                border: 1px solid #475569;
-                border-radius: 5px;
-                padding: 6px 8px;
-                min-height: 28px;
+                border: 1px solid #3a4658;
+                border-radius: 12px;
+                padding: 2px 8px;
+                min-height: 20px;
+            }
+            QComboBox#flatCombo {
+                background: #121b2b;
+                border: 1px solid #334155;
+                border-radius: 12px;
+                padding: 2px 24px 2px 10px;
+            }
+            QComboBox#flatCombo::drop-down {
+                border: none;
+                background: transparent;
+                width: 24px;
+            }
+            QComboBox#flatCombo::down-arrow {
+                image: none;
+                width: 0;
+                height: 0;
+            }
+            QComboBox#flatCombo QAbstractItemView {
+                background: #111827;
+                color: #e5e7eb;
+                border: 1px solid #334155;
+                selection-background-color: #263244;
             }
             QPlainTextEdit {
                 background: #020617;
@@ -1528,10 +2147,10 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
             QPushButton {
                 background: #1e293b;
                 color: #e5e7eb;
-                border: 1px solid #475569;
-                border-radius: 6px;
-                padding: 8px 10px;
-                min-height: 30px;
+                border: 1px solid #3a4658;
+                border-radius: 12px;
+                padding: 3px 10px;
+                min-height: 20px;
                 font-weight: 600;
             }
             QPushButton:hover {
@@ -1543,24 +2162,102 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
                 border-color: #38bdf8;
             }
             #primaryButton {
-                background: #2563eb;
+                background: #667aa4;
                 color: #ffffff;
-                border-color: #1d4ed8;
+                border-color: #5b6f95;
             }
             #runButton {
-                background: #16a34a;
+                background: #6f9878;
                 color: #ffffff;
-                border-color: #15803d;
+                border-color: #63886c;
             }
             #stopButton {
-                background: #dc2626;
+                background: #b27575;
                 color: #ffffff;
-                border-color: #b91c1c;
+                border-color: #a16969;
+            }
+            #plotPanel {
+                background: #0a101c;
+                border: 1px solid #1e293b;
+                border-radius: 20px;
+            }
+            #plotToolbar, #channelToolbar {
+                background: transparent;
+                border: none;
+            }
+            #plotCard {
+                background: #151c2b;
+                border: 1px solid #293548;
+                border-radius: 18px;
+            }
+            #plotCanvas {
+                background: transparent;
+                border: none;
+            }
+            #channelPillColumn {
+                background: transparent;
+                min-width: 96px;
+                max-width: 112px;
+            }
+            #channelPillScroll {
+                background: transparent;
+                border: none;
+                min-height: 36px;
+                max-height: 42px;
+            }
+            #channelPillHost {
+                background: transparent;
+            }
+            #toolbarButton {
+                background: #1b2637;
+                color: #b9c4d6;
+                border: 1px solid #2f3d52;
+                border-radius: 15px;
+                padding: 5px 10px;
+                min-height: 28px;
+            }
+            #toolbarButton:hover {
+                background: #243249;
+                color: #f8fafc;
+            }
+            #iconButton, #recordButton {
+                background: #1b2637;
+                color: #d4deef;
+                border: 1px solid #2f3d52;
+                border-radius: 19px;
+                padding: 0;
+                min-height: 36px;
+                font-size: 18px;
+            }
+            #iconButton:checked, #recordButton:checked {
+                background: #1b2637;
+                color: #d4deef;
+                border-color: #2f3d52;
+            }
+            #recordButton {
+                color: #e05264;
+            }
+            #iconButton:hover, #recordButton:hover {
+                background: #243249;
             }
             #telemetryCard {
                 background: #111827;
                 border: 1px solid #334155;
-                border-radius: 8px;
+                border-radius: 16px;
+            }
+            #summaryCard {
+                background: #111827;
+                border: 1px solid #334155;
+                border-radius: 16px;
+            }
+            #summaryTitle {
+                color: #94a3b8;
+                font-weight: 700;
+            }
+            #summaryValue {
+                color: #f8fafc;
+                font-size: 13px;
+                font-weight: 800;
             }
             #cardTitle {
                 color: #94a3b8;
@@ -1568,15 +2265,51 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
             }
             #cardValue {
                 color: #f8fafc;
-                font-size: 18px;
+                font-size: 16px;
                 font-weight: 800;
             }
             #cardUnit {
                 color: #64748b;
                 font-size: 9pt;
             }
+            #diagName {
+                color: #94a3b8;
+                font-weight: 700;
+            }
+            #diagValue {
+                background: #020617;
+                border: 1px solid #1e293b;
+                border-radius: 14px;
+                color: #f8fafc;
+                font-weight: 800;
+                padding: 8px 10px;
+            }
+            #diagUnit {
+                color: #64748b;
+            }
+            #diagnosticChip {
+                background: #0f172a;
+                border: 1px solid #334155;
+                border-radius: 14px;
+            }
             QCheckBox {
                 color: #e5e7eb;
+            }
+            QScrollBar:vertical {
+                background: transparent;
+                width: 10px;
+                margin: 0;
+            }
+            QScrollBar::handle:vertical {
+                background: #475569;
+                border-radius: 5px;
+                min-height: 44px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: transparent;
             }
             QStatusBar {
                 background: #020617;
@@ -1594,14 +2327,18 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         #sidebar {
             background: #ffffff;
             border: 1px solid #d9dee7;
-            border-radius: 8px;
+            border-radius: 18px;
         }
         #sidebarScroll {
             background: transparent;
             border: none;
         }
+        #mainScroll {
+            background: transparent;
+            border: none;
+        }
         #appTitle {
-            font-size: 22px;
+            font-size: 20px;
             font-weight: 800;
             color: #111827;
         }
@@ -1616,15 +2353,15 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
             background: #ffffff;
             color: #111827;
             border: 1px solid #cfd6e1;
-            border-radius: 6px;
+            border-radius: 14px;
             padding: 6px 10px;
             font-weight: 700;
         }
         QGroupBox {
             border: 1px solid #d9dee7;
-            border-radius: 7px;
-            margin-top: 10px;
-            padding: 10px;
+            border-radius: 14px;
+            margin-top: 8px;
+            padding: 8px;
             background: #ffffff;
             font-weight: 700;
         }
@@ -1634,12 +2371,55 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
             padding: 0 4px;
             color: #374151;
         }
+        QTabWidget::pane {
+            border: none;
+            border-top: 1px solid #e5e7eb;
+            background: transparent;
+        }
+        QTabBar::tab {
+            background: transparent;
+            color: #64748b;
+            border: none;
+            border-bottom: 3px solid transparent;
+            padding: 12px 22px 10px 22px;
+            margin-right: 8px;
+            font-size: 11pt;
+        }
+        QTabBar::tab:selected {
+            color: #6d5df2;
+            border-bottom-color: #6d5df2;
+        }
+        QTabBar::tab:hover {
+            color: #111827;
+        }
         QLineEdit, QComboBox, QDoubleSpinBox, QPlainTextEdit {
             background: #ffffff;
             border: 1px solid #cfd6e1;
-            border-radius: 5px;
-            padding: 6px 8px;
-            min-height: 28px;
+            border-radius: 12px;
+            padding: 2px 8px;
+            min-height: 20px;
+        }
+        QComboBox#flatCombo {
+            background: #f8fafc;
+            border: 1px solid #d7dee8;
+            border-radius: 12px;
+            padding: 2px 24px 2px 10px;
+        }
+        QComboBox#flatCombo::drop-down {
+            border: none;
+            background: transparent;
+            width: 24px;
+        }
+        QComboBox#flatCombo::down-arrow {
+            image: none;
+            width: 0;
+            height: 0;
+        }
+        QComboBox#flatCombo QAbstractItemView {
+            background: #ffffff;
+            color: #111827;
+            border: 1px solid #d7dee8;
+            selection-background-color: #eef2f7;
         }
         QPlainTextEdit {
             background: #0f172a;
@@ -1650,9 +2430,9 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         QPushButton {
             background: #eef2f7;
             border: 1px solid #cfd6e1;
-            border-radius: 6px;
-            padding: 8px 10px;
-            min-height: 30px;
+            border-radius: 12px;
+            padding: 3px 10px;
+            min-height: 20px;
             font-weight: 600;
         }
         QPushButton:hover {
@@ -1664,24 +2444,103 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
             border-color: #cfd6e1;
         }
         #primaryButton {
-            background: #2563eb;
+            background: #7588b2;
             color: #ffffff;
-            border-color: #1d4ed8;
+            border-color: #697ba0;
         }
         #runButton {
-            background: #16a34a;
+            background: #78a381;
             color: #ffffff;
-            border-color: #15803d;
+            border-color: #6b9274;
         }
         #stopButton {
-            background: #dc2626;
+            background: #bc7c7c;
             color: #ffffff;
-            border-color: #b91c1c;
+            border-color: #aa7070;
+        }
+        #plotPanel {
+            background: #f8fafc;
+            border: 1px solid #e5e7eb;
+            border-radius: 20px;
+        }
+        #plotToolbar, #channelToolbar {
+            background: transparent;
+            border: none;
+        }
+        #plotCard {
+            background: #ffffff;
+            border: 1px solid #e5e7eb;
+            border-radius: 18px;
+        }
+        #plotCanvas {
+            background: transparent;
+            border: none;
+        }
+        #channelPillColumn {
+            background: transparent;
+            min-width: 96px;
+            max-width: 112px;
+        }
+        #channelPillScroll {
+            background: transparent;
+            border: none;
+            min-height: 36px;
+            max-height: 42px;
+        }
+        #channelPillHost {
+            background: transparent;
+        }
+        #toolbarButton {
+            background: #ffffff;
+            color: #475569;
+            border: 1px solid #e2e8f0;
+            border-radius: 15px;
+            padding: 5px 10px;
+            min-height: 28px;
+        }
+        #toolbarButton:hover {
+            background: #f1f5f9;
+            color: #0f172a;
+        }
+        #iconButton, #recordButton {
+            background: #ffffff;
+            color: #475569;
+            border: 1px solid #e2e8f0;
+            border-radius: 19px;
+            padding: 0;
+            min-height: 36px;
+            font-size: 18px;
+        }
+        #iconButton:checked, #recordButton:checked {
+            background: #ffffff;
+            color: #475569;
+            border-color: #e2e8f0;
+        }
+        #recordButton {
+            color: #d9465f;
+        }
+        #iconButton:hover, #recordButton:hover {
+            background: #f1f5f9;
+            color: #0f172a;
         }
         #telemetryCard {
             background: #ffffff;
             border: 1px solid #d9dee7;
-            border-radius: 8px;
+            border-radius: 16px;
+        }
+        #summaryCard {
+            background: #ffffff;
+            border: 1px solid #d9dee7;
+            border-radius: 16px;
+        }
+        #summaryTitle {
+            color: #64748b;
+            font-weight: 700;
+        }
+        #summaryValue {
+            color: #0f172a;
+            font-size: 13px;
+            font-weight: 800;
         }
         #cardTitle {
             color: #64748b;
@@ -1689,12 +2548,48 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         }
         #cardValue {
             color: #0f172a;
-            font-size: 18px;
+            font-size: 16px;
             font-weight: 800;
         }
         #cardUnit {
             color: #94a3b8;
             font-size: 9pt;
+        }
+        #diagName {
+            color: #64748b;
+            font-weight: 700;
+        }
+        #diagValue {
+            background: #f8fafc;
+            border: 1px solid #d9dee7;
+            border-radius: 14px;
+            color: #0f172a;
+            font-weight: 800;
+            padding: 8px 10px;
+        }
+        #diagUnit {
+            color: #94a3b8;
+        }
+        #diagnosticChip {
+            background: #ffffff;
+            border: 1px solid #d9dee7;
+            border-radius: 14px;
+        }
+        QScrollBar:vertical {
+            background: transparent;
+            width: 10px;
+            margin: 0;
+        }
+        QScrollBar::handle:vertical {
+            background: #cbd5e1;
+            border-radius: 5px;
+            min-height: 44px;
+        }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            height: 0;
+        }
+        QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+            background: transparent;
         }
         QStatusBar {
             background: #ffffff;

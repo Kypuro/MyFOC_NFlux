@@ -1,6 +1,7 @@
 import math
 import os
 import queue
+import re
 import struct
 import sys
 import unittest
@@ -82,10 +83,9 @@ class SerialWorkerParserTest(unittest.TestCase):
 
 class PlotWindowTest(unittest.TestCase):
     def test_default_plot_windows_match_signal_types(self):
-        self.assertLess(host.PLOT_DEFAULT_WINDOWS["current"], 1.0)
-        self.assertLess(host.PLOT_DEFAULT_WINDOWS["theta"], 1.0)
-        self.assertGreater(host.PLOT_DEFAULT_WINDOWS["speed"], host.PLOT_DEFAULT_WINDOWS["theta"])
-        self.assertGreater(host.PLOT_DEFAULT_WINDOWS["voltage"], host.PLOT_DEFAULT_WINDOWS["theta"])
+        self.assertEqual(set(host.PLOT_DEFAULT_WINDOWS), {"state", "measure"})
+        self.assertLess(host.PLOT_DEFAULT_WINDOWS["state"], 1.0)
+        self.assertLess(host.PLOT_DEFAULT_WINDOWS["measure"], 1.0)
 
     def test_time_range_uses_requested_window(self):
         left, right = host.time_range_for_latest(10.0, 0.65)
@@ -117,7 +117,7 @@ class PlotWindowTest(unittest.TestCase):
 
     def test_visible_curve_data_limits_points_to_active_window(self):
         x, y = host.visible_curve_data_for_plot(
-            "current",
+            "measure",
             [0, 1, 2, 3, 4, 5, 6],
             [10, 11, 12, 13, 14, 15, 16],
             2,
@@ -142,25 +142,259 @@ class PlotInteractionTest(unittest.TestCase):
 
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
-    def test_manual_zoom_keeps_that_plot_following_latest(self):
+    def test_manual_zoom_stops_that_plot_following_latest(self):
         window = host.MyFocHostWindow()
         window.auto_scroll_check.setChecked(True)
 
-        window._on_plot_range_changed_manually("speed")
+        window._on_plot_range_changed_manually("state")
 
-        self.assertTrue(window.plot_follow_latest["speed"])
-        self.assertTrue(window.plot_follow_latest["current"])
+        self.assertFalse(window.plot_follow_latest["state"])
+        self.assertTrue(window.plot_follow_latest["measure"])
+
+    def test_manual_zoom_disables_auto_y_for_that_plot(self):
+        window = host.MyFocHostWindow()
+        window.auto_scale_check.setChecked(True)
+
+        window._on_plot_range_changed_manually("state")
+
+        self.assertFalse(window.plot_auto_y["state"])
+        self.assertTrue(window.plot_auto_y["measure"])
 
     def test_manual_zoom_updates_only_that_plot_window_width(self):
         window = host.MyFocHostWindow()
         window.auto_scroll_check.setChecked(True)
-        old_current_window = window.plot_window_spins["current"].value()
-        window.plot_items["speed"].setXRange(1.0, 1.5, padding=0.0)
+        old_measure_window = window.plot_window_spins["measure"].value()
+        window.plot_items["state"].setXRange(1.0, 1.5, padding=0.0)
 
-        window._on_plot_range_changed_manually("speed")
+        window._on_plot_range_changed_manually("state")
 
-        self.assertAlmostEqual(window.plot_window_spins["speed"].value(), 0.5, places=2)
-        self.assertAlmostEqual(window.plot_window_spins["current"].value(), old_current_window, places=2)
+        self.assertAlmostEqual(window.plot_window_spins["state"].value(), 0.5, places=2)
+        self.assertAlmostEqual(window.plot_window_spins["measure"].value(), old_measure_window, places=2)
+
+    def test_main_panel_removes_fast_changing_summary_cards(self):
+        window = host.MyFocHostWindow()
+
+        self.assertEqual(window.summary_cards, [])
+
+    def test_main_header_has_no_explanatory_subtitle(self):
+        window = host.MyFocHostWindow()
+
+        hint_labels = window.main_panel.findChildren(host.QtWidgets.QLabel, "hintText")
+        self.assertFalse(any(label.parent().objectName() == "mainHeader" for label in hint_labels))
+
+    def test_main_panel_is_not_wrapped_in_right_side_scroll_area(self):
+        window = host.MyFocHostWindow()
+
+        self.assertIsNone(window.main_scroll)
+
+    def test_plot_toolbar_is_in_main_header(self):
+        window = host.MyFocHostWindow()
+
+        self.assertIs(window.pause_button.parent(), window.plot_toolbar)
+        self.assertIs(window.log_button.parent(), window.plot_toolbar)
+        self.assertIs(window.theme_button.parent(), window.plot_toolbar)
+        self.assertEqual(window.plot_toolbar.parent().objectName(), "mainHeader")
+        self.assertIsNot(window.plot_toolbar.parent(), window.plot_panel)
+        self.assertEqual(window.theme_button.text(), "")
+        self.assertEqual(window.pause_button.minimumSize().height(), 38)
+        self.assertEqual(window.rate_label.minimumHeight(), 36)
+
+    def test_plot_toolbar_uses_drawn_icons_instead_of_text_glyphs(self):
+        window = host.MyFocHostWindow()
+
+        for button in (
+            window.pause_button,
+            window.log_button,
+            window.reset_view_button,
+            window.clear_data_button,
+            window.theme_button,
+        ):
+            self.assertEqual(button.text(), "")
+            self.assertFalse(button.icon().isNull())
+            self.assertEqual(button.iconSize(), host.QtCore.QSize(22, 22))
+
+        window._set_paused(True)
+        self.assertEqual(window.pause_button.text(), "")
+        self.assertFalse(window.pause_button.icon().isNull())
+
+    def test_sidebar_is_compact_without_visible_scrollbar(self):
+        window = host.MyFocHostWindow()
+
+        self.assertEqual(
+            window.sidebar_scroll.verticalScrollBarPolicy(),
+            host.QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
+        )
+        self.assertLessEqual(window.console.maximumHeight(), 72)
+        self.assertLessEqual(window.speed_spin.minimumHeight(), 32)
+        self.assertLessEqual(window.port_combo.minimumHeight(), 32)
+
+    def test_combo_boxes_use_flat_modern_style_hook(self):
+        window = host.MyFocHostWindow()
+
+        self.assertEqual(window.port_combo.objectName(), "flatCombo")
+        self.assertEqual(window.baud_box.objectName(), "flatCombo")
+
+    def test_waveform_uses_two_stacked_plot_panels(self):
+        window = host.MyFocHostWindow()
+
+        self.assertEqual(tuple(window.plot_items.keys()), ("state", "measure"))
+        self.assertEqual(host.PLOT_PANELS["state"]["channels"], ("theta", "speed", "ref", "tcmp1", "tcmp2", "tcmp3", "foc_state"))
+        self.assertEqual(host.PLOT_PANELS["measure"]["channels"], ("ia", "ib", "ic", "id", "iq", "id_ref", "iq_ref", "ud", "uq", "vbus"))
+        self.assertFalse(window.legends)
+
+    def test_waveform_uses_one_y_axis_per_plot(self):
+        window = host.MyFocHostWindow()
+
+        self.assertEqual(set(window.plot_axis_views["state"]), {"value"})
+        self.assertEqual(set(window.plot_axis_views["measure"]), {"value"})
+        self.assertEqual(window.plot_axis_items["state"]["value"], window.plot_items["state"].getAxis("left"))
+        self.assertEqual(window.plot_axis_items["measure"]["value"], window.plot_items["measure"].getAxis("left"))
+
+    def test_plot_grid_is_visible_but_low_contrast_in_both_themes(self):
+        window = host.MyFocHostWindow()
+
+        self.assertGreaterEqual(window._plot_grid_alpha(), 0.28)
+        self.assertLessEqual(window._plot_grid_alpha(), 0.40)
+
+        window.theme_button.setChecked(True)
+
+        self.assertGreaterEqual(window._plot_grid_alpha(), 0.18)
+        self.assertLessEqual(window._plot_grid_alpha(), 0.30)
+
+    def test_speed_and_vbus_are_bound_to_primary_plot_axes(self):
+        window = host.MyFocHostWindow()
+
+        self.assertIn(window.curves["speed"], window.plot_items["state"].listDataItems())
+        self.assertIn(window.curves["vbus"], window.plot_items["measure"].listDataItems())
+
+    def test_channel_selectors_are_vertical_pills_left_of_each_plot(self):
+        window = host.MyFocHostWindow()
+
+        self.assertEqual(window.channel_pill_layouts["state"].direction(), host.QtWidgets.QBoxLayout.Direction.TopToBottom)
+        self.assertEqual(window.channel_pill_layouts["measure"].direction(), host.QtWidgets.QBoxLayout.Direction.TopToBottom)
+        self.assertEqual(window.channel_checks["theta"].objectName(), "channelPill")
+        self.assertEqual(window.channel_checks["ia"].objectName(), "channelPill")
+        self.assertIsInstance(window.channel_checks["theta"], host.QtWidgets.QPushButton)
+        self.assertTrue(window.channel_checks["theta"].isCheckable())
+        self.assertTrue(window.channel_checks["theta"].text().startswith("\u25cf "))
+        self.assertGreaterEqual(window.channel_checks["theta"].minimumWidth(), 96)
+        self.assertEqual(
+            window.channel_checks["theta"].sizePolicy().horizontalPolicy(),
+            host.QtWidgets.QSizePolicy.Policy.Expanding,
+        )
+
+    def test_channel_pill_toggles_when_clicking_right_side(self):
+        from PySide6 import QtTest
+
+        window = host.MyFocHostWindow()
+        window.show()
+        self.app.processEvents()
+        pill = window.channel_checks["theta"]
+        pill.resize(128, 32)
+        was_checked = pill.isChecked()
+
+        QtTest.QTest.mouseClick(
+            pill,
+            host.QtCore.Qt.MouseButton.LeftButton,
+            host.QtCore.Qt.KeyboardModifier.NoModifier,
+            host.QtCore.QPoint(pill.width() - 4, pill.height() // 2),
+        )
+
+        self.assertNotEqual(pill.isChecked(), was_checked)
+
+    def test_channel_selectors_are_vertically_centered(self):
+        window = host.MyFocHostWindow()
+
+        for layout in window.channel_pill_layouts.values():
+            self.assertIsNotNone(layout.itemAt(0).spacerItem())
+            self.assertIsNotNone(layout.itemAt(layout.count() - 1).spacerItem())
+
+    def test_each_plot_is_wrapped_in_a_rounded_plot_card(self):
+        window = host.MyFocHostWindow()
+
+        for plot_area in window.plot_areas.values():
+            self.assertEqual(plot_area.parent().objectName(), "plotCard")
+            self.assertLessEqual(plot_area.minimumHeight(), 240)
+
+    def test_diagnostic_tab_is_not_shown(self):
+        window = host.MyFocHostWindow()
+
+        tab_titles = [window.tab_widget.tabText(index) for index in range(window.tab_widget.count())]
+        self.assertEqual(tab_titles, ["实时曲线", "控制预留"])
+        self.assertEqual(window.diagnostic_chips, {})
+
+    def test_motor_control_button_labels_hide_command_literals(self):
+        window = host.MyFocHostWindow()
+
+        self.assertNotIn("RUN=", window.run_button.text())
+        self.assertNotIn("RUN=", window.stop_button.text())
+        self.assertIn("启动", window.run_button.text())
+        self.assertIn("停止", window.stop_button.text())
+
+    def test_spin_boxes_use_modern_no_button_style(self):
+        window = host.MyFocHostWindow()
+
+        self.assertEqual(window.speed_spin.buttonSymbols(), host.QtWidgets.QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.assertEqual(window.plot_window_spins["state"].buttonSymbols(), host.QtWidgets.QAbstractSpinBox.ButtonSymbols.NoButtons)
+
+    def test_enabling_hidden_channel_populates_existing_history(self):
+        window = host.MyFocHostWindow()
+        for index in range(10):
+            window.time_history.append(index * 0.1)
+            for channel in host.CHANNELS:
+                value = float(index)
+                if channel.key == "tcmp1":
+                    value = 4000.0 + index
+                window.history[channel.key].append(value)
+
+        window._update_plot()
+        x_before, _ = window.curves["tcmp1"].getData()
+        self.assertEqual(0 if x_before is None else len(x_before), 0)
+
+        window.channel_checks["tcmp1"].setChecked(True)
+
+        x_after, y_after = window.curves["tcmp1"].getData()
+        self.assertIsNotNone(x_after)
+        self.assertIsNotNone(y_after)
+        self.assertGreater(len(x_after), 0)
+        self.assertEqual(len(x_after), len(y_after))
+
+    def test_enabling_hidden_channel_refreshes_its_axis_range(self):
+        window = host.MyFocHostWindow()
+        for index in range(10):
+            window.time_history.append(index * 0.1)
+            for channel in host.CHANNELS:
+                value = float(index)
+                if channel.key == "tcmp1":
+                    value = 4000.0 + index
+                window.history[channel.key].append(value)
+
+        window._update_plot()
+        window.plot_items["state"].getViewBox().setYRange(0.0, 1.0, padding=0.0)
+        window.channel_checks["tcmp1"].setChecked(True)
+
+        y_range = window.plot_items["state"].getViewBox().viewRange()[1]
+        self.assertLess(y_range[0], 4000.0)
+        self.assertGreater(y_range[1], 4009.0)
+
+    def test_primary_views_follow_programmatic_x_ranges(self):
+        window = host.MyFocHostWindow()
+
+        window._apply_plot_x_ranges({"state": (1.0, 2.0), "measure": (3.0, 4.0)})
+        self.app.processEvents()
+
+        state_range = window.plot_items["state"].getViewBox().viewRange()[0]
+        measure_range = window.plot_items["measure"].getViewBox().viewRange()[0]
+        self.assertAlmostEqual(state_range[0], 1.0, places=2)
+        self.assertAlmostEqual(state_range[1], 2.0, places=2)
+        self.assertAlmostEqual(measure_range[0], 3.0, places=2)
+        self.assertAlmostEqual(measure_range[1], 4.0, places=2)
+
+    def test_visible_windowed_curves_disable_auto_downsampling(self):
+        window = host.MyFocHostWindow()
+
+        for curve in window.curves.values():
+            self.assertFalse(curve.opts.get("autoDownsample"))
 
 
 class CommandSendTest(unittest.TestCase):
@@ -261,6 +495,35 @@ class FirmwareCommandRxTest(unittest.TestCase):
         self.assertIn("FocDiagUq", foc_header)
         self.assertIn("FocDiagState", foc_header)
         self.assertIn("load_data[16] = FocDiagState;", main_source)
+
+    def test_firmware_diagnostic_order_matches_pc_parser(self):
+        project_root = Path(__file__).resolve().parents[1]
+        main_source = (project_root / "Core" / "Src" / "main.c").read_text(encoding="utf-8")
+
+        assignments = dict(re.findall(r"load_data\[(\d+)\]\s*=\s*([^;]+);", main_source))
+        expected = {
+            0: "rtU.ia",
+            1: "rtU.ib",
+            2: "rtU.ic",
+            3: "FluxTheta",
+            4: "FluxWm",
+            5: "rtU.RefSpeed",
+            6: "rtU.v_bus",
+            7: "FocDiagId",
+            8: "FocDiagIq",
+            9: "FocDiagIdRef",
+            10: "FocDiagIqRef",
+            11: "FocDiagUd",
+            12: "FocDiagUq",
+            13: "FocDiagTcmp1",
+            14: "FocDiagTcmp2",
+            15: "FocDiagTcmp3",
+            16: "FocDiagState",
+        }
+
+        self.assertEqual(tuple(expected), tuple(range(len(host.TELEMETRY_KEYS_DIAGNOSTIC))))
+        for index, source_expression in expected.items():
+            self.assertEqual(assignments[str(index)].strip(), source_expression)
 
 
 class TechnicalIssueDocTest(unittest.TestCase):
