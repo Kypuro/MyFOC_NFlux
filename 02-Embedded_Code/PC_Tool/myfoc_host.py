@@ -14,6 +14,8 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from parameter_identification import IdentificationError, estimate_rs_from_csv
+
 try:
     import serial
     from serial.tools import list_ports
@@ -26,6 +28,7 @@ BAUD_DEFAULT = 2_000_000
 UI_UPDATE_MS = 50
 AUTO_Y_RANGE_INTERVAL_S = 0.20
 Y_RANGE_PADDING_RATIO = 0.15
+Y_RANGE_CONSTANT_SPAN_RATIO = 0.08
 CONTROL_COMMAND_REPEAT_COUNT = 3
 CONTROL_COMMAND_REPEAT_INTERVAL_MS = 35
 FRAME_TAIL = b"\x00\x00\x80\x7f"
@@ -62,12 +65,12 @@ VBUS_VALID_MIN = -0.5
 VBUS_VALID_MAX = 120.0
 PLOT_WINDOW_MIN = 0.05
 PLOT_WINDOW_MAX = 120.0
-PLOT_GRID_ALPHA_LIGHT = 0.36
-PLOT_GRID_ALPHA_DARK = 0.24
+PLOT_GRID_ALPHA_LIGHT = 0.44
+PLOT_GRID_ALPHA_DARK = 0.32
 PLOT_PANELS = {
     "state": {
         "title": "State / Control",
-        "channels": ("theta", "speed", "ref", "tcmp1", "tcmp2", "tcmp3", "foc_state"),
+        "channels": ("theta", "speed", "ref", "tcmp1", "tcmp2", "tcmp3"),
         "axes": ("value",),
     },
     "measure": {
@@ -80,6 +83,7 @@ PLOT_DEFAULT_WINDOWS = {
     "state": 0.65,
     "measure": 0.65,
 }
+TARGET_TRACKING_WINDOW_MIN_S = 5.0
 PLOT_MAX_VISIBLE_POINTS = {
     "state": 6000,
     "measure": 6000,
@@ -117,10 +121,10 @@ CHANNEL_COLORS = {
     "speed": "#5aa7bf",
     "ref": "#d0a24a",
     "vbus": "#a488d4",
-    "id": "#8d99aa",
-    "iq": "#69aa9b",
-    "id_ref": "#adb5c2",
-    "iq_ref": "#76ad84",
+    "id": "#74869a",
+    "iq": "#55a99b",
+    "id_ref": "#c5965a",
+    "iq_ref": "#b984c7",
     "ud": "#cb8756",
     "uq": "#c36b66",
     "tcmp1": "#9a8fe3",
@@ -208,7 +212,7 @@ def is_plausible_telemetry(values):
         if key in values and not math.isfinite(float(values[key])):
             return False
 
-    for key in ("id", "iq", "id_ref", "iq_ref", "ud", "uq", "tcmp1", "tcmp2", "tcmp3", "foc_state"):
+    for key in ("id", "iq", "id_ref", "iq_ref", "ud", "uq", "tcmp1", "tcmp2", "tcmp3"):
         if key in values and not math.isfinite(float(values[key])):
             return False
 
@@ -275,10 +279,6 @@ def visible_curve_data_for_plot(plot_key, x_values, y_values, left, right, max_p
     mask = (x >= float(left)) & (x <= float(right))
     x = x[mask]
     y = y[mask]
-    if max_points is not None and len(x) > max_points:
-        step = max(1, math.ceil(len(x) / int(max_points)))
-        x = x[::step]
-        y = y[::step]
     return curve_data_for_plot(plot_key, x, y)
 
 
@@ -290,8 +290,9 @@ def padded_y_range(y_values, min_span):
 
     y_min = float(np.min(y))
     y_max = float(np.max(y))
-    span = max(y_max - y_min, float(min_span))
     center = (y_min + y_max) * 0.5
+    proportional_span = abs(center) * Y_RANGE_CONSTANT_SPAN_RATIO
+    span = max(y_max - y_min, float(min_span), proportional_span)
     half = span * 0.5
     pad = span * Y_RANGE_PADDING_RATIO
     return center - half - pad, center + half + pad
@@ -311,10 +312,10 @@ CHANNELS = [
     Channel("ia", "A 相电流", "A", "#ef476f", "current", True),
     Channel("ib", "B 相电流", "A", "#06d6a0", "current", True),
     Channel("ic", "C 相电流", "A", "#3b82f6", "current", True),
-    Channel("theta", "磁链角", "rad", "#8b5cf6", "theta", True),
+    Channel("theta", "磁链角", "rad", "#8b5cf6", "theta", False),
     Channel("speed", "观测速度", "rpm", "#118ab2", "speed", True),
     Channel("ref", "参考速度", "rpm", "#f59f00", "speed", True),
-    Channel("vbus", "控制母线电压", "V", "#a855f7", "voltage", True),
+    Channel("vbus", "控制母线电压", "V", "#a855f7", "voltage", False),
     Channel("id", "Id", "A", "#64748b", "current", False),
     Channel("iq", "Iq", "A", "#0f766e", "current", False),
     Channel("id_ref", "Id_ref", "A", "#94a3b8", "current", False),
@@ -324,7 +325,6 @@ CHANNELS = [
     Channel("tcmp1", "Tcmp1", "count", "#7c3aed", "voltage", False),
     Channel("tcmp2", "Tcmp2", "count", "#9333ea", "voltage", False),
     Channel("tcmp3", "Tcmp3", "count", "#a855f7", "voltage", False),
-    Channel("foc_state", "FOC_state", "", "#475569", "speed", False),
 ]
 
 CHANNELS = [
@@ -337,6 +337,7 @@ CHANNELS = [
         channel.default_visible,
     )
     for channel in CHANNELS
+    if channel.key in CHANNEL_PANEL_KEYS
 ]
 CHANNEL_BY_KEY = {channel.key: channel for channel in CHANNELS}
 PRIMARY_CARD_KEYS = ("ia", "ib", "ic", "theta", "speed", "ref", "vbus")
@@ -350,7 +351,6 @@ DIAGNOSTIC_VALUE_KEYS = (
     "tcmp1",
     "tcmp2",
     "tcmp3",
-    "foc_state",
 )
 
 class WorkerSignals(QtCore.QObject):
@@ -611,6 +611,8 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         self.channel_checks = {}
         self.channel_pill_layouts = {}
         self.plot_window_spins = {}
+        self.plot_observation_windows = dict(PLOT_DEFAULT_WINDOWS)
+        self.plot_last_x_windows = dict(PLOT_DEFAULT_WINDOWS)
         self.plot_follow_latest = {}
         self.plot_auto_y = {}
         self.cards = {}
@@ -625,7 +627,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         self.dark_theme = False
         self.demo_enabled = False
         self.demo_phase = 0.0
-        self.last_values = {channel.key: float("nan") for channel in CHANNELS}
+        self.last_values = {key: float("nan") for key in TELEMETRY_KEYS_DIAGNOSTIC}
         self.programmatic_range_change = False
 
         self.logging = False
@@ -690,6 +692,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        scroll.setFixedWidth(container.width())
         scroll.setWidget(container)
 
         layout = QtWidgets.QVBoxLayout(container)
@@ -698,10 +701,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
 
         title = QtWidgets.QLabel("MyFOC_NFlux")
         title.setObjectName("appTitle")
-        subtitle = QtWidgets.QLabel("FOC 调试上位机")
-        subtitle.setObjectName("appSubtitle")
         layout.addWidget(title)
-        layout.addWidget(subtitle)
 
         layout.addWidget(self._connection_group())
         layout.addWidget(self._control_group())
@@ -721,9 +721,10 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         self.port_combo.setObjectName("flatCombo")
         self.port_combo.setFixedHeight(30)
         self.port_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self.port_combo.setMinimumContentsLength(24)
+        self.port_combo.setMinimumContentsLength(8)
         self.port_combo.setEditable(True)
         self.port_combo.lineEdit().setPlaceholderText("COM12")
+        self.port_combo.currentIndexChanged.connect(self._update_port_combo_tooltip)
         self.refresh_button = QtWidgets.QPushButton("刷新")
         self.connect_button = QtWidgets.QPushButton("连接")
         self.connect_button.setObjectName("primaryButton")
@@ -798,21 +799,11 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         controls = QtWidgets.QGridLayout()
         controls.setHorizontalSpacing(8)
         controls.setVerticalSpacing(4)
-        self.auto_scroll_check = QtWidgets.QCheckBox("跟随最新数据")
-        self.auto_scroll_check.setChecked(True)
-        self.auto_scale_check = QtWidgets.QCheckBox("Y 轴自动缩放")
-        self.auto_scale_check.setChecked(True)
-        self.grid_check = QtWidgets.QCheckBox("网格")
-        self.grid_check.setChecked(True)
-
-        controls.addWidget(self.auto_scroll_check, 0, 0, 1, 2)
-        controls.addWidget(self.auto_scale_check, 1, 0, 1, 2)
-        controls.addWidget(self.grid_check, 2, 0, 1, 2)
         window_labels = {
             "state": "状态窗",
             "measure": "测量窗",
         }
-        for row, plot_key in enumerate(PLOT_PANELS, start=3):
+        for row, plot_key in enumerate(PLOT_PANELS):
             spin = QtWidgets.QDoubleSpinBox()
             spin.setFixedHeight(30)
             spin.setRange(PLOT_WINDOW_MIN, PLOT_WINDOW_MAX)
@@ -965,7 +956,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
                 name=channel.label,
             )
             curve.setVisible(channel.default_visible)
-            curve.setDownsampling(auto=False)
+            curve.setDownsampling(auto=True, method="peak")
             curve.setClipToView(True)
             self.curves[channel.key] = curve
             self._install_legend_click_handler(channel)
@@ -1106,6 +1097,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         for button in [self.identify_rs_button, self.identify_ldq_button, self.identify_flux_button]:
             button.setEnabled(False)
             identify_layout.addWidget(button)
+        self.identify_rs_button.setEnabled(True)
         identify_layout.addStretch(1)
 
         layout.addWidget(position_group, 0, 0)
@@ -1165,8 +1157,8 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         self.plot_panel = QtWidgets.QFrame()
         self.plot_panel.setObjectName("plotPanel")
         plot_panel_layout = QtWidgets.QVBoxLayout(self.plot_panel)
-        plot_panel_layout.setContentsMargins(14, 14, 14, 14)
-        plot_panel_layout.setSpacing(10)
+        plot_panel_layout.setContentsMargins(10, 8, 10, 10)
+        plot_panel_layout.setSpacing(8)
         for panel_key in PLOT_PANELS:
             plot_panel_layout.addWidget(self._build_plot_row(panel_key), 1)
 
@@ -1261,18 +1253,33 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
             )
         elif kind == "record":
             painter.setPen(QtCore.Qt.PenStyle.NoPen)
-            painter.setBrush(QtGui.QBrush(QtGui.QColor("#e05264")))
-            painter.drawEllipse(QtCore.QPointF(12.0, 12.0), 5.0, 5.0)
+            painter.setBrush(QtGui.QBrush(QtGui.QColor("#ffffff")))
+            painter.drawEllipse(QtCore.QPointF(12.0, 12.0), 4.2, 4.2)
+        elif kind == "record_pause":
+            painter.setPen(QtCore.Qt.PenStyle.NoPen)
+            painter.setBrush(QtGui.QBrush(QtGui.QColor("#ffffff")))
+            painter.drawRoundedRect(QtCore.QRectF(9.2, 8.0, 1.9, 8.0), 0.8, 0.8)
+            painter.drawRoundedRect(QtCore.QRectF(12.9, 8.0, 1.9, 8.0), 0.8, 0.8)
         elif kind == "reset":
-            painter.setPen(pen)
+            reset_pen = QtGui.QPen(icon_color, 3.5)
+            reset_pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
+            reset_pen.setJoinStyle(QtCore.Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(reset_pen)
             painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
-            painter.drawArc(QtCore.QRectF(6.0, 6.0, 12.0, 12.0), 25 * 16, 290 * 16)
-            painter.drawPolyline(
+            arc_points = []
+            for angle in range(46, 318, 7):
+                radians = math.radians(angle)
+                arc_points.append(QtCore.QPointF(11.8 + math.cos(radians) * 7.2, 12.2 + math.sin(radians) * 7.2))
+            painter.drawPolyline(QtGui.QPolygonF(arc_points))
+
+            painter.setPen(QtCore.Qt.PenStyle.NoPen)
+            painter.setBrush(QtGui.QBrush(icon_color))
+            painter.drawPolygon(
                 QtGui.QPolygonF(
                     [
-                        QtCore.QPointF(7.0, 6.8),
-                        QtCore.QPointF(6.2, 10.6),
-                        QtCore.QPointF(10.1, 9.7),
+                        QtCore.QPointF(22.0, 6.1),
+                        QtCore.QPointF(12.0, 1.0),
+                        QtCore.QPointF(13.0, 10.8),
                     ]
                 )
             )
@@ -1292,15 +1299,20 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         else:
             painter.setPen(QtCore.Qt.PenStyle.NoPen)
             painter.setBrush(QtGui.QBrush(icon_color))
-            painter.drawEllipse(QtCore.QRectF(6.0, 4.0, 12.5, 16.0))
-            painter.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_Clear)
-            painter.drawEllipse(QtCore.QRectF(10.2, 2.9, 12.5, 16.0))
+            moon = QtGui.QPainterPath()
+            moon.moveTo(20.4, 3.0)
+            moon.cubicTo(10.0, 3.3, 4.2, 7.2, 4.2, 12.0)
+            moon.cubicTo(4.2, 16.8, 10.0, 20.7, 20.4, 21.0)
+            moon.cubicTo(15.8, 18.1, 12.9, 15.0, 12.9, 12.0)
+            moon.cubicTo(12.9, 9.0, 15.8, 5.9, 20.4, 3.0)
+            painter.drawPath(moon)
 
         painter.end()
         return QtGui.QIcon(pixmap)
 
     def _set_toolbar_button_icon(self, button, kind):
         button.setText("")
+        button.setProperty("iconKind", kind)
         button.setIcon(self._make_toolbar_icon(kind, self._toolbar_icon_color()))
         button.setIconSize(QtCore.QSize(22, 22))
 
@@ -1308,21 +1320,25 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         if not hasattr(self, "pause_button"):
             return
         self._set_toolbar_button_icon(self.pause_button, "play" if self.paused else "pause")
-        self._set_toolbar_button_icon(self.log_button, "record")
+        self._set_toolbar_button_icon(self.log_button, "record_pause" if self.logging else "record")
         self._set_toolbar_button_icon(self.reset_view_button, "reset")
         self._set_toolbar_button_icon(self.clear_data_button, "clear")
-        self._set_toolbar_button_icon(self.theme_button, "sun" if self.dark_theme else "moon")
+        self.theme_button.setIcon(QtGui.QIcon())
+        self.theme_button.setText("☀" if self.dark_theme else "🌙")
 
     def _build_plot_row(self, panel_key):
         panel = PLOT_PANELS[panel_key]
         row = QtWidgets.QFrame()
         row.setObjectName("plotCard")
+        row.setMinimumHeight(0)
+        row.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
         row_layout = QtWidgets.QHBoxLayout(row)
-        row_layout.setContentsMargins(12, 10, 12, 10)
+        row_layout.setContentsMargins(10, 8, 10, 8)
         row_layout.setSpacing(10)
 
         pill_column = QtWidgets.QFrame()
         pill_column.setObjectName("channelPillColumn")
+        pill_column.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Expanding)
         pill_layout = QtWidgets.QVBoxLayout(pill_column)
         pill_layout.setContentsMargins(0, 8, 0, 8)
         pill_layout.setSpacing(8)
@@ -1345,8 +1361,9 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
 
         plot_area = pg.GraphicsLayoutWidget()
         plot_area.setObjectName("plotCanvas")
-        plot_area.setMinimumHeight(230)
-        plot_item = plot_area.addPlot(row=0, col=0, title=panel["title"])
+        plot_area.setMinimumHeight(0)
+        plot_area.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
+        plot_item = plot_area.addPlot(row=0, col=0)
         self.plot_areas[panel_key] = plot_area
         self._setup_panel_plot(panel_key, plot_item)
         row_layout.addWidget(plot_area, 1)
@@ -1362,7 +1379,6 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         plot_item.showGrid(x=True, y=True, alpha=self._plot_grid_alpha())
         plot_item.setMenuEnabled(True)
         plot_item.getViewBox().setMouseEnabled(x=True, y=True)
-        plot_item.setLabel("left", "Value")
         plot_item.setLabel("bottom", "Time", units="s")
         left_axis = plot_item.getAxis("left")
         if hasattr(left_axis, "enableAutoSIPrefix"):
@@ -1378,7 +1394,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
             channel = CHANNEL_BY_KEY[channel_key]
             curve = pg.PlotDataItem([], [], pen=pg.mkPen(channel.color, width=2.0), name=channel.label)
             curve.setVisible(channel.default_visible)
-            curve.setDownsampling(auto=False)
+            curve.setDownsampling(auto=True, method="peak")
             curve.setClipToView(True)
             plot_item.addItem(curve)
             self.plot_axis_for_channel[channel.key] = primary_axis
@@ -1441,12 +1457,10 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         self.demo_button.toggled.connect(self.toggle_demo)
         self.command_send_button.clicked.connect(self.send_custom_command)
         self.command_edit.returnPressed.connect(self.send_custom_command)
+        self.identify_rs_button.clicked.connect(self.identify_rs_from_csv)
         self.log_button.clicked.connect(self.toggle_logging)
         self.theme_button.toggled.connect(self._set_dark_theme)
-        self.auto_scroll_check.toggled.connect(self._set_follow_latest)
         self.pause_button.toggled.connect(self._set_paused)
-        self.grid_check.toggled.connect(self._set_grid_visible)
-        self.auto_scale_check.toggled.connect(self._apply_auto_scale)
         self.reset_view_button.clicked.connect(self.reset_view)
         if hasattr(self, "select_all_button"):
             self.select_all_button.clicked.connect(lambda: self._set_all_channels(True))
@@ -1456,6 +1470,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
 
         self.speed_slider.valueChanged.connect(lambda value: self.speed_spin.setValue(float(value)))
         self.speed_spin.valueChanged.connect(lambda value: self.speed_slider.setValue(int(value)))
+        self.speed_spin.valueChanged.connect(self._preview_target_speed_range)
 
         for plot_key, spin in self.plot_window_spins.items():
             spin.valueChanged.connect(
@@ -1512,7 +1527,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
 
         for key, plot_item in self.plot_items.items():
             plot_item.getViewBox().setBackgroundColor(plot_bg)
-            plot_item.showGrid(x=self.grid_check.isChecked(), y=self.grid_check.isChecked(), alpha=grid_alpha)
+            plot_item.showGrid(x=True, y=True, alpha=grid_alpha)
             for axis_name in ("left", "bottom"):
                 axis = plot_item.getAxis(axis_name)
                 axis.setPen(pg.mkPen(axis_pen))
@@ -1549,8 +1564,15 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         self.last_port_devices = devices
         self.port_combo.clear()
         for port in ports:
-            label = f"{port.device}  {port.description}"
-            self.port_combo.addItem(label, port.device)
+            device = str(port.device)
+            description = str(getattr(port, "description", "") or "").strip()
+            full_label = f"{device}  {description}" if description and description != device else device
+            self.port_combo.addItem(device, device)
+            self.port_combo.setItemData(
+                self.port_combo.count() - 1,
+                full_label,
+                QtCore.Qt.ItemDataRole.ToolTipRole,
+            )
 
         if ports:
             index = 0
@@ -1560,8 +1582,15 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
                     break
             self.port_combo.setCurrentIndex(index)
         elif current_text:
-            self.port_combo.addItem(current_text, port_name_from_combo_text(current_text))
+            device = port_name_from_combo_text(current_text)
+            self.port_combo.addItem(device, device)
+            self.port_combo.setItemData(
+                0,
+                current_text,
+                QtCore.Qt.ItemDataRole.ToolTipRole,
+            )
             self.port_combo.setCurrentIndex(0)
+        self._update_port_combo_tooltip()
 
         status = f"发现 {len(ports)} 个串口"
         if not ports:
@@ -1569,6 +1598,12 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         if force_status or status != self.last_port_scan_status:
             self.last_port_scan_status = status
             self.set_status(status)
+
+    def _update_port_combo_tooltip(self, _index=None):
+        tooltip = self.port_combo.currentData(QtCore.Qt.ItemDataRole.ToolTipRole)
+        if not tooltip:
+            tooltip = self.port_combo.currentText().strip()
+        self.port_combo.setToolTip(str(tooltip))
 
     def _selected_port(self):
         port = self.port_combo.currentData()
@@ -1633,7 +1668,40 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
     def send_speed(self):
         speed = max(SPEED_MIN, min(SPEED_MAX, self.speed_spin.value()))
         self.speed_spin.setValue(speed)
+        self.last_values["ref"] = speed
+        if "state" in self.plot_auto_y:
+            self.plot_auto_y["state"] = True
+        self._refresh_visible_y_ranges(force=True)
         self.send_control_command(f"SPD={speed:.1f}")
+
+    def _preview_target_speed_range(self, _value):
+        ref_check = self.channel_checks.get("ref")
+        if ref_check is None or not ref_check.isChecked():
+            return
+        self._restore_state_observation_window()
+        if not self.plot_auto_y.get("state", True):
+            return
+        self._refresh_visible_y_ranges(force=True)
+        QtCore.QTimer.singleShot(800, lambda: self._refresh_visible_y_ranges(force=True))
+
+    def _restore_state_observation_window(self):
+        spin = self.plot_window_spins.get("state")
+        if spin is None:
+            return
+        target_window = max(
+            TARGET_TRACKING_WINDOW_MIN_S,
+            self.plot_observation_windows.get("state", PLOT_DEFAULT_WINDOWS["state"]),
+        )
+        self.plot_observation_windows["state"] = float(target_window)
+        if abs(float(spin.value()) - float(target_window)) > 1e-6:
+            spin.blockSignals(True)
+            try:
+                spin.setValue(float(target_window))
+            finally:
+                spin.blockSignals(False)
+        self.plot_follow_latest["state"] = True
+        self.plot_auto_y["state"] = True
+        self._scroll_to_latest()
 
     def send_custom_command(self):
         text = self.command_edit.text().strip()
@@ -1641,6 +1709,47 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
             return
         self.send_command(text)
         self.command_edit.clear()
+
+    def identify_rs_from_csv(self, csv_path=None):
+        path = csv_path
+        if path is None:
+            data_dir = os.path.join(os.path.dirname(__file__), "data")
+            path, _selected_filter = QtWidgets.QFileDialog.getOpenFileName(
+                self,
+                "Select Rs identification CSV",
+                data_dir,
+                "CSV Files (*.csv);;All Files (*)",
+            )
+        if not path:
+            return None
+
+        try:
+            result = estimate_rs_from_csv(path)
+        except (IdentificationError, OSError, ValueError) as exc:
+            message = f"Rs ID failed: {exc}"
+            self.set_status(message)
+            QtWidgets.QMessageBox.warning(self, "Rs ID", message)
+            return None
+
+        self.append_console(self._format_rs_identification_result(result))
+        self.set_status(f"Rs ID OK: {result.rs_at_reference_ohm:.4f} ohm @20C")
+        return result
+
+    def _format_rs_identification_result(self, result):
+        validation_rmse = "n/a"
+        if math.isfinite(result.validation_rmse_v):
+            validation_rmse = f"{result.validation_rmse_v:.5f} V"
+        return (
+            f"Rs ID: Rs={result.rs_ohm:.4f} ohm, "
+            f"Rs@20C={result.rs_at_reference_ohm:.4f} ohm, "
+            f"offset={result.voltage_offset_v:.4f} V, "
+            f"signV={result.sign_voltage_v:.4f} V, "
+            f"rmse={result.rmse_v:.5f} V, "
+            f"holdout={validation_rmse}, "
+            f"levels={result.valid_level_count}, "
+            f"samples={result.sample_count}, "
+            f"rejected={result.rejected_sample_count}"
+        )
 
     def toggle_demo(self, checked):
         self.demo_enabled = checked
@@ -1666,7 +1775,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         self.log_writer = csv.writer(self.log_file)
         self.log_writer.writerow(CSV_HEADERS)
         self.logging = True
-        self.log_button.setText("\u25cf")
+        self._set_toolbar_button_icon(self.log_button, "record_pause")
         self.log_button.setToolTip("停止记录 CSV")
         self.log_label.setText(path)
         self.append_console(f"CSV 记录开始：{path}")
@@ -1678,7 +1787,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
             self.log_file.close()
         self.log_file = None
         self.log_writer = None
-        self.log_button.setText("\u25cf")
+        self._set_toolbar_button_icon(self.log_button, "record")
         self.log_button.setToolTip("记录 CSV")
         if was_logging:
             self.append_console("CSV 记录停止")
@@ -1711,10 +1820,24 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
     def _on_plot_range_changed_manually(self, plot_key):
         if self.programmatic_range_change:
             return
-        self.plot_follow_latest[plot_key] = False
+        previous_window = float(self.plot_last_x_windows.get(plot_key, PLOT_DEFAULT_WINDOWS[plot_key]))
         self._sync_plot_window_from_view(plot_key)
+        current_window = float(self.plot_window_spins.get(plot_key).value())
+        if current_window >= previous_window:
+            self.plot_observation_windows[plot_key] = current_window
+        else:
+            existing_window = float(self.plot_observation_windows.get(plot_key, PLOT_DEFAULT_WINDOWS[plot_key]))
+            if previous_window > existing_window * 1.05:
+                self.plot_observation_windows[plot_key] = previous_window
+            else:
+                self.plot_observation_windows[plot_key] = existing_window
+        self.plot_last_x_windows[plot_key] = current_window
+        self.plot_follow_latest[plot_key] = not self.paused
         self.plot_auto_y[plot_key] = False
         self.plot_items[plot_key].enableAutoRange(axis="y", enable=False)
+        self._constrain_manual_y_range(plot_key)
+        if self.paused:
+            self._update_plot()
 
     def _sync_plot_window_from_view(self, plot_key):
         spin = self.plot_window_spins.get(plot_key)
@@ -1730,27 +1853,20 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         finally:
             spin.blockSignals(False)
 
-    def _set_grid_visible(self, checked):
-        grid_alpha = self._plot_grid_alpha()
-        for plot_item in self.plot_items.values():
-            plot_item.showGrid(x=checked, y=checked, alpha=grid_alpha)
-
     def _on_plot_window_changed(self, plot_key, _value):
+        spin = self.plot_window_spins.get(plot_key)
+        if spin is not None:
+            self.plot_observation_windows[plot_key] = float(spin.value())
         self.plot_follow_latest[plot_key] = True
-        if self.auto_scroll_check.isChecked():
-            self._scroll_to_latest()
+        self._scroll_to_latest()
 
     def _apply_auto_scale(self):
-        enabled = self.auto_scale_check.isChecked()
-        self.plot_auto_y = {key: enabled for key in self.plot_items}
+        self.plot_auto_y = {key: True for key in self.plot_items}
         for plot_item in self.plot_items.values():
             plot_item.enableAutoRange(axis="y", enable=False)
-        if enabled:
-            self._refresh_visible_y_ranges(force=True)
+        self._refresh_visible_y_ranges(force=True)
 
     def reset_view(self):
-        self.auto_scroll_check.setChecked(True)
-        self.auto_scale_check.setChecked(True)
         self.plot_follow_latest = {key: True for key in self.plot_items}
         self.plot_auto_y = {key: True for key in self.plot_items}
         self.programmatic_range_change = True
@@ -1780,13 +1896,13 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
             check.setChecked(checked)
 
     def _update_channel_visibility(self):
+        self.plot_auto_y = {key: True for key in self.plot_items}
         for key, curve in self.curves.items():
             curve.setVisible(self.channel_checks[key].isChecked())
         if self.time_history:
             self._update_plot()
-            if self.auto_scale_check.isChecked():
-                self._refresh_visible_y_ranges(force=True)
-        elif self.auto_scale_check.isChecked():
+            self._refresh_visible_y_ranges(force=True)
+        else:
             self._refresh_visible_y_ranges(force=True)
 
     def _push_demo_frame(self):
@@ -1839,15 +1955,14 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
             t_rel = timestamp - self.t0
             self.time_history.append(t_rel)
 
-            for channel in CHANNELS:
-                value = float(values.get(channel.key, float("nan")))
-                if channel.key == "theta":
+            for key in TELEMETRY_KEYS_DIAGNOSTIC:
+                value = float(values.get(key, float("nan")))
+                if key == "theta":
                     value = wrap_angle_0_2pi(value)
-                self.last_values[channel.key] = value
-                if channel.key == "theta":
-                    self.history[channel.key].append(value)
-                else:
-                    self.history[channel.key].append(value)
+                self.last_values[key] = value
+
+            for channel in CHANNELS:
+                self.history[channel.key].append(self.last_values[channel.key])
 
             if self.logging and self.log_writer:
                 self.log_writer.writerow([
@@ -1892,22 +2007,19 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
                     right,
                     PLOT_MAX_VISIBLE_POINTS[channel.plot],
                 )
-                self.curves[channel.key].setData(plot_x, plot_y)
+                self.curves[channel.key].setData(plot_x, plot_y, connect="finite")
 
-        if self.auto_scroll_check.isChecked():
-            self._apply_plot_x_ranges(ranges, only_following=True)
+        self._apply_plot_x_ranges(ranges, only_following=True)
 
-        if self.auto_scale_check.isChecked():
-            now = time.perf_counter()
-            if now - self.last_auto_y_time >= AUTO_Y_RANGE_INTERVAL_S:
-                self._apply_visible_y_ranges(x, y_arrays, ranges)
-                self.last_auto_y_time = now
+        now = time.perf_counter()
+        if now - self.last_auto_y_time >= AUTO_Y_RANGE_INTERVAL_S:
+            self._apply_visible_y_ranges(x, y_arrays, ranges)
+            self._expand_manual_y_ranges_to_visible_data(x, y_arrays, ranges)
+            self.last_auto_y_time = now
 
     def _active_plot_x_ranges(self, latest_time, x=None, y_arrays=None):
         latest_ranges = self._plot_time_ranges(latest_time, x, y_arrays)
         current_ranges = self._current_plot_x_ranges()
-        if not self.auto_scroll_check.isChecked():
-            return current_ranges
         return {
             plot_key: latest_ranges[plot_key] if self.plot_follow_latest.get(plot_key, True) else current_ranges[plot_key]
             for plot_key in self.plot_items
@@ -1948,6 +2060,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
                     continue
                 left, right = ranges[plot_key]
                 plot_item.setXRange(left, right, padding=0.0)
+                self.plot_last_x_windows[plot_key] = max(PLOT_WINDOW_MIN, float(right - left))
                 self._sync_axis_views(plot_key)
         finally:
             self.programmatic_range_change = False
@@ -1973,22 +2086,103 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
         self.programmatic_range_change = True
         try:
             for plot_key in self.plot_items:
-                if not self.auto_scale_check.isChecked() or not self.plot_auto_y.get(plot_key, True):
+                if not self.plot_auto_y.get(plot_key, True):
                     continue
 
-                left, right = ranges[plot_key]
-                mask = (x >= left) & (x <= right)
-                visible_parts = []
-                for channel_key in PLOT_PANELS[plot_key]["channels"]:
-                    y = y_arrays.get(channel_key)
-                    if y is not None and len(y) == len(x):
-                        visible_parts.append(y[mask])
-                if not visible_parts:
-                    continue
-
-                y_range = padded_y_range(np.concatenate(visible_parts), PLOT_Y_MIN_SPANS[plot_key])
+                y_range = self._visible_y_range_for_plot(plot_key, x, y_arrays, ranges[plot_key])
                 if y_range is not None:
                     self.plot_items[plot_key].getViewBox().setYRange(y_range[0], y_range[1], padding=0.0)
+        finally:
+            self.programmatic_range_change = False
+
+    def _expand_manual_y_ranges_to_visible_data(self, x, y_arrays, ranges):
+        self.programmatic_range_change = True
+        try:
+            for plot_key, plot_item in self.plot_items.items():
+                if self.plot_auto_y.get(plot_key, True):
+                    continue
+
+                required_y_range = self._visible_y_range_for_plot(plot_key, x, y_arrays, ranges[plot_key])
+                if required_y_range is None:
+                    continue
+
+                current_y_range = plot_item.getViewBox().viewRange()[1]
+                current_low = float(current_y_range[0])
+                current_high = float(current_y_range[1])
+                required_low = float(required_y_range[0])
+                required_high = float(required_y_range[1])
+                if required_low >= current_low and required_high <= current_high:
+                    continue
+
+                current_span = max(current_high - current_low, 1e-9)
+                required_span = max(required_high - required_low, 1e-9)
+                target_span = max(current_span, required_span)
+                target_center = (required_low + required_high) * 0.5
+                plot_item.getViewBox().setYRange(
+                    target_center - target_span * 0.5,
+                    target_center + target_span * 0.5,
+                    padding=0.0,
+                )
+        finally:
+            self.programmatic_range_change = False
+
+    def _visible_y_range_for_plot(self, plot_key, x, y_arrays, x_range):
+        left, right = x_range
+        mask = (x >= left) & (x <= right)
+        visible_parts = []
+        for channel_key in PLOT_PANELS[plot_key]["channels"]:
+            y = y_arrays.get(channel_key)
+            if y is not None and len(y) == len(x):
+                visible_parts.append(y[mask])
+
+        ref_check = self.channel_checks.get("ref")
+        if plot_key == "state" and ref_check is not None and ref_check.isChecked():
+            visible_parts.append(np.asarray([float(self.speed_spin.value())], dtype=float))
+
+        visible_parts = [part for part in visible_parts if len(part) > 0]
+        if not visible_parts:
+            return None
+        return padded_y_range(np.concatenate(visible_parts), PLOT_Y_MIN_SPANS[plot_key])
+
+    def _constrain_manual_y_range(self, plot_key):
+        if not self.time_history:
+            return
+
+        plot_item = self.plot_items.get(plot_key)
+        if plot_item is None:
+            return
+
+        x = np.fromiter(self.time_history, dtype=float)
+        y_arrays = {
+            channel.key: np.fromiter(self.history[channel.key], dtype=float)
+            for channel in CHANNELS
+            if self.channel_checks[channel.key].isChecked()
+        }
+        x_range, current_y_range = plot_item.getViewBox().viewRange()
+        required_y_range = self._visible_y_range_for_plot(
+            plot_key,
+            x,
+            y_arrays,
+            (float(x_range[0]), float(x_range[1])),
+        )
+        if required_y_range is None:
+            return
+
+        current_span = max(float(current_y_range[1] - current_y_range[0]), 1e-9)
+        required_span = max(float(required_y_range[1] - required_y_range[0]), 1e-9)
+        target_span = max(current_span, required_span)
+        target_center = (required_y_range[0] + required_y_range[1]) * 0.5
+        new_y_range = (target_center - target_span * 0.5, target_center + target_span * 0.5)
+
+        if (
+            abs(new_y_range[0] - current_y_range[0]) < 1e-9
+            and abs(new_y_range[1] - current_y_range[1]) < 1e-9
+        ):
+            return
+
+        self.programmatic_range_change = True
+        try:
+            plot_item.getViewBox().setYRange(new_y_range[0], new_y_range[1], padding=0.0)
         finally:
             self.programmatic_range_change = False
 
@@ -2220,7 +2414,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
                 background: #243249;
                 color: #f8fafc;
             }
-            #iconButton, #recordButton {
+            #iconButton {
                 background: #1b2637;
                 color: #d4deef;
                 border: 1px solid #2f3d52;
@@ -2229,16 +2423,31 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
                 min-height: 36px;
                 font-size: 18px;
             }
-            #iconButton:checked, #recordButton:checked {
+            #iconButton:checked {
                 background: #1b2637;
                 color: #d4deef;
                 border-color: #2f3d52;
             }
             #recordButton {
-                color: #e05264;
+                background: #e05264;
+                color: #ffffff;
+                border: 1px solid #e05264;
+                border-radius: 19px;
+                padding: 0;
+                min-height: 36px;
+                font-size: 18px;
             }
-            #iconButton:hover, #recordButton:hover {
+            #recordButton:checked {
+                background: #e05264;
+                color: #ffffff;
+                border-color: #e05264;
+            }
+            #iconButton:hover {
                 background: #243249;
+            }
+            #recordButton:hover {
+                background: #d9465f;
+                border-color: #d9465f;
             }
             #telemetryCard {
                 background: #111827;
@@ -2502,7 +2711,7 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
             background: #f1f5f9;
             color: #0f172a;
         }
-        #iconButton, #recordButton {
+        #iconButton {
             background: #ffffff;
             color: #475569;
             border: 1px solid #e2e8f0;
@@ -2511,17 +2720,32 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
             min-height: 36px;
             font-size: 18px;
         }
-        #iconButton:checked, #recordButton:checked {
+        #iconButton:checked {
             background: #ffffff;
             color: #475569;
             border-color: #e2e8f0;
         }
         #recordButton {
-            color: #d9465f;
+            background: #e05264;
+            color: #ffffff;
+            border: 1px solid #e05264;
+            border-radius: 19px;
+            padding: 0;
+            min-height: 36px;
+            font-size: 18px;
         }
-        #iconButton:hover, #recordButton:hover {
+        #recordButton:checked {
+            background: #e05264;
+            color: #ffffff;
+            border-color: #e05264;
+        }
+        #iconButton:hover {
             background: #f1f5f9;
             color: #0f172a;
+        }
+        #recordButton:hover {
+            background: #d9465f;
+            border-color: #d9465f;
         }
         #telemetryCard {
             background: #ffffff;

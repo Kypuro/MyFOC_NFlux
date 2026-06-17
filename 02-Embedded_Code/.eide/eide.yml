@@ -82,8 +82,7 @@ targets:
         - .cmsis/include
         - MDK-ARM/RTE/_My_FOC
         - Matlab
-      libList:
-        - Matlab
+      libList: []
     excludeList: []
     settings:
       debugger: cortex-debug

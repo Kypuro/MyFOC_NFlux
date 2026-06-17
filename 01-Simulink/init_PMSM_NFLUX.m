@@ -3,6 +3,10 @@
 
 %% 模型名称和仿真时间
 model_name = 'PMSM_NFLUX';
+this_script_dir = fileparts(mfilename('fullpath'));
+if ~isempty(this_script_dir)
+    addpath(fullfile(this_script_dir, 'ParameterIdentification'));
+end
 
 Ts = 1.0e-4;                      % FOC 电流环/主控制周期，单位 s，也就是 10 kHz
 Ts_speed = 1.0e-3;                % 速度环周期，单位 s，也就是 1 kHz
@@ -26,6 +30,29 @@ J = single(75e-6);               % 转动惯量，单位 kg*m^2
 B = single(8e-5);             % 粘性摩擦系数，单位 N*m*s/rad
 load_torque = single(0.0);        % 外部负载转矩，单位 N*m
 Kt = single(1.5) * Pn * flux;     % 转矩常数，单位 N*m/A，公式 Kt = 1.5 * Pn * flux
+
+%% Rs identification parameters
+RsId_Init = Rs;                   % Initial estimated stator resistance, ohm
+RsId_L = L;                       % Inductance used to compensate L * di/dt, H
+RsId_MinCurrent = single(0.05);   % Minimum alpha-beta current magnitude, A
+RsId_MaxOmega = single(5.0);      % Maximum electrical speed for Rs ID, rad/s
+RsId_LpfGain = single(0.02);      % First-order update gain for Rs_hat
+RsId_Min = single(0.1);           % Lower clamp for instantaneous Rs, ohm
+RsId_Max = single(50.0);          % Upper clamp for instantaneous Rs, ohm
+
+%% Standstill Rs identification parameters
+RsIdBatch_Init = Rs;                  % Initial/held Rs estimate for standstill ID, ohm
+RsIdBatch_MinCurrent = single(0.05);  % Minimum d-axis/test current magnitude, A
+RsIdBatch_MaxSpeed = single(5.0);     % Maximum speed accepted as standstill, rpm-equivalent input
+RsIdBatch_MinSamples = int32(3);      % Minimum settled samples per current level
+RsIdBatch_MinLevels = int32(4);       % Minimum fit levels required before accepting Rs
+RsIdBatch_SettleTicks = int32(200);   % Samples to discard after each level transition
+RsIdBatch_Min = single(0.1);          % Lower valid Rs limit, ohm
+RsIdBatch_Max = single(50.0);         % Upper valid Rs limit, ohm
+RsIdBatch_MaxRmse = single(0.1);      % Maximum fit voltage RMSE, V
+RsIdBatch_MaxValRmse = single(0.1);   % Maximum holdout validation RMSE, V
+RsIdBatch_RefTemp = single(20.0);     % Reference winding temperature, degC
+RsIdBatch_CuAlpha = single(0.00393);  % Copper resistance temperature coefficient, 1/degC
 
 %% 电流环 PI 参数
 current_bw = single(1000.0);      % 电流环目标带宽，单位 rad/s
