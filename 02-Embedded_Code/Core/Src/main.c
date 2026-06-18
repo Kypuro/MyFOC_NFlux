@@ -112,11 +112,17 @@
 /** @brief 当前无感启动/闭环切换策略允许的最低稳定转速 (RPM) */
 #define SPEED_SENSORLESS_MIN_RPM 120.0f
 
-/** @brief 允许的最低目标转速 (RPM) */
-#define SPEED_MIN_RPM SPEED_SENSORLESS_MIN_RPM
+/** @brief 运行中速度给定斜率限制 (RPM/s)，用于降低换向和阶跃调速冲击 */
+#define SPEED_REF_RAMP_RATE_RPM_PER_S 5000.0f
+
+/** @brief 主循环速度给定更新周期 (s)，当前主循环末尾 HAL_Delay(10) */
+#define SPEED_REF_UPDATE_PERIOD_S 0.01f
 
 /** @brief 允许的最高目标转速 (RPM)，防止超速损坏电机或驱动器 */
 #define SPEED_MAX_RPM 1800.0f
+
+/** @brief 允许的最低目标转速 (RPM)，负值用于反转 */
+#define SPEED_MIN_RPM (-SPEED_MAX_RPM)
 
 /** @brief 上位机 ASCII 命令缓冲区大小（含结尾 '\0'） */
 #define HOST_CMD_BUFFER_SIZE 32U
@@ -298,6 +304,9 @@ volatile uint8_t host_stop_request = 0U;
  *        该值被限制在 [SPEED_MIN_RPM, SPEED_MAX_RPM] 范围内。
  */
 volatile float host_ref_speed = SPEED_DEFAULT_RPM;
+
+/** @brief 实际送入 FOC 模型的速度参考，按斜率追踪 host_ref_speed */
+volatile float host_foc_speed_ref = SPEED_DEFAULT_RPM;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -313,6 +322,10 @@ void SystemClock_Config(void);
  * @note   用于限制上位机下发的转速指令，防止超范围运行。
  */
 static float ClampFloat(float value, float lower, float upper);
+
+static float ClampSpeedCommand(float speed);
+
+static float HostCommand_UpdateSpeedReference(float current_ref, float target_ref);
 
 /**
  * @brief  启动 USART3 RX DMA 环形接收
@@ -449,7 +462,7 @@ int main(void)
    * - RefSpeed: 默认 600 RPM，后续可由上位机 SPD=xxx 命令修改。
    */
   rtU.v_bus = VBUS_FIXED_VALUE;
-  rtU.RefSpeed = SPEED_DEFAULT_RPM;
+  rtU.SpeedRefToFOC = SPEED_DEFAULT_RPM;
 
   /*
    * 安全策略：上电默认不启动。
@@ -563,7 +576,15 @@ int main(void)
      * 第 2 步：将上位机速度给定同步到 FOC 模型输入
      * host_ref_speed 可能被 HostCommand_Parse() 修改，每次循环都刷新。
      */
-    rtU.RefSpeed = host_ref_speed;
+    if (Motor_state == 0U)
+    {
+      host_foc_speed_ref = host_ref_speed;
+    }
+    else
+    {
+      host_foc_speed_ref = HostCommand_UpdateSpeedReference(host_foc_speed_ref, host_ref_speed);
+    }
+    rtU.SpeedRefToFOC = host_foc_speed_ref;
 
     /*
      * 第 3 步：低频读取母线电压（ADC2 regular 通道）
@@ -721,6 +742,65 @@ static float ClampFloat(float value, float lower, float upper)
     return upper;
   }
   return value;
+}
+
+static float ClampSpeedCommand(float speed)
+{
+  speed = ClampFloat(speed, SPEED_MIN_RPM, SPEED_MAX_RPM);
+  if ((speed > 0.0f) && (speed < SPEED_SENSORLESS_MIN_RPM))
+  {
+    return SPEED_SENSORLESS_MIN_RPM;
+  }
+  if ((speed < 0.0f) && (speed > -SPEED_SENSORLESS_MIN_RPM))
+  {
+    return -SPEED_SENSORLESS_MIN_RPM;
+  }
+  return speed;
+}
+
+static float HostCommand_UpdateSpeedReference(float current_ref, float target_ref)
+{
+  float delta;
+  float max_step;
+  float next_ref;
+
+  if (target_ref == current_ref)
+  {
+    return target_ref;
+  }
+
+  delta = target_ref - current_ref;
+  max_step = SPEED_REF_RAMP_RATE_RPM_PER_S * SPEED_REF_UPDATE_PERIOD_S;
+  next_ref = current_ref + ClampFloat(delta, -max_step, max_step);
+
+  if ((current_ref >= SPEED_SENSORLESS_MIN_RPM) && (target_ref <= -SPEED_SENSORLESS_MIN_RPM)
+      && (next_ref < SPEED_SENSORLESS_MIN_RPM))
+  {
+    return -SPEED_SENSORLESS_MIN_RPM;
+  }
+
+  if ((current_ref <= -SPEED_SENSORLESS_MIN_RPM) && (target_ref >= SPEED_SENSORLESS_MIN_RPM)
+      && (next_ref > -SPEED_SENSORLESS_MIN_RPM))
+  {
+    return SPEED_SENSORLESS_MIN_RPM;
+  }
+
+  if ((target_ref == 0.0f) && (current_ref > 0.0f) && (next_ref < 0.0f))
+  {
+    return 0.0f;
+  }
+
+  if ((target_ref == 0.0f) && (current_ref < 0.0f) && (next_ref > 0.0f))
+  {
+    return 0.0f;
+  }
+
+  if (((target_ref - next_ref) > 0.0f) != (delta > 0.0f))
+  {
+    return target_ref;
+  }
+
+  return next_ref;
 }
 
 /**
@@ -933,7 +1013,7 @@ static void HostCommand_Parse(char *cmd)
   speed = strtof(value_text, &end_text);
   if (end_text != value_text)
   {
-    host_ref_speed = ClampFloat(speed, SPEED_MIN_RPM, SPEED_MAX_RPM);
+    host_ref_speed = ClampSpeedCommand(speed);
   }
 }
 
@@ -1112,7 +1192,7 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef* hadc)
         load_data[2] = rtU.ic;
         load_data[3] = FluxTheta;   /* FOC 模型输出的磁链角度 (rad) */
         load_data[4] = FluxWm;      /* FOC 模型输出的机械速度 (rpm) */
-        load_data[5] = rtU.RefSpeed;/* 目标转速 (RPM) */
+        load_data[5] = rtU.SpeedRefToFOC;/* 目标转速 (RPM) */
         load_data[6] = rtU.v_bus;   /* 母线电压 (V) */
         load_data[7] = FocDiagId;
         load_data[8] = FocDiagIq;

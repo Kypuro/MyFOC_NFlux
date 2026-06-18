@@ -3,9 +3,9 @@
  *
  * Code generated for Simulink model 'FOC'.
  *
- * Model version                  : 1.38
+ * Model version                  : 1.51
  * Simulink Coder version         : 23.2 (R2023b) 01-Aug-2023
- * C/C++ source code generated on : Sun Jun 14 01:21:19 2026
+ * C/C++ source code generated on : Wed Jun 17 20:08:16 2026
  *
  * Target selection: ert.tlc
  * Embedded hardware selection: ARM Compatible->ARM Cortex-M
@@ -90,6 +90,22 @@ real32_T FocDiagTcmp1;
 real32_T FocDiagTcmp2;
 real32_T FocDiagTcmp3;
 real32_T FocDiagState;
+
+#define FOC_REVERSE_CROSS_TICKS        6000U
+#define FOC_REVERSE_ALIGN_TICKS        5000U
+#define FOC_REVERSE_OPEN_IQ_REF        1.0F
+#define FOC_REVERSE_OPEN_SPEED_RPM     600.0F
+#define FOC_SPEED_LOOP_DELAY_TICKS     5000U
+
+static real_T rtRunStagePrevMotorState;
+static int8_T rtClosedLoopDir;
+static int8_T rtReverseDir;
+static uint16_T rtReverseOpenTicks;
+static uint16_T rtReverseAlignTicks;
+static uint16_T rtRunHandoverTicks;
+static real32_T rtReverseTheta;
+static real32_T rtReverseOmegaElec;
+static real32_T rtReverseThetaCorrection;
 
 /* Exported data definition */
 
@@ -325,6 +341,7 @@ real32_T rt_modf(real32_T u0, real32_T u1)
 /* Model step function */
 void FOC_step(void)
 {
+  int32_T rtb_OpenSpeedSigned;
   real32_T rtb_PWM_HalfPeriod[3];
   real32_T rtb_Add1;
   real32_T rtb_Add1_k;
@@ -333,25 +350,23 @@ void FOC_step(void)
   real32_T rtb_DeadZone_fw;
   real32_T rtb_DiscreteTimeIntegrator;
   real32_T rtb_Gain2;
-  real32_T rtb_IProdOut;
   real32_T rtb_Integrator_jp;
   real32_T rtb_Integrator_l_tmp;
+  real32_T rtb_RateTransition;
   real32_T rtb_Saturation_l;
   real32_T rtb_Sin;
+  real32_T rtb_Sum1;
   real32_T rtb_theta;
   uint32_T Speed_loop_ELAPS_T;
   int16_T rtb_IProdOut_c;
   int8_T tmp;
   int8_T tmp_0;
+  int8_T rtb_RefDir;
+  boolean_T rtb_RunHandoverActive;
+  boolean_T rtb_ReverseControlActive;
 
-  /* Outputs for Atomic SubSystem: '<S3>/Clark' */
-  /* Inport: '<Root>/ia' incorporates:
-   *  Inport: '<Root>/ib'
-   *  Inport: '<Root>/ic'
-   */
-  Clark(rtU.ia, rtU.ib, rtU.ic, &rtb_Add1_k, &rtb_Gain2);
-
-  /* End of Outputs for SubSystem: '<S3>/Clark' */
+  rtb_RunHandoverActive = false;
+  rtb_ReverseControlActive = false;
 
   /* Chart: '<S60>/Chart' incorporates:
    *  Inport: '<Root>/MotorOnOff'
@@ -436,6 +451,21 @@ void FOC_step(void)
 
   /* End of Chart: '<S60>/Chart' */
 
+  /* Switch: '<S60>/OpenSpeedSigned' incorporates:
+   *  Constant: '<S123>/Constant'
+   *  Constant: '<S60>/Constant1'
+   *  Constant: '<S60>/OpenSpeedNegative'
+   *  Inport: '<Root>/Speed_ref'
+   *  RelationalOperator: '<S123>/Compare'
+   */
+  if (rtU.SpeedRefToFOC < 0.0F) {
+    rtb_OpenSpeedSigned = -600;
+  } else {
+    rtb_OpenSpeedSigned = 600;
+  }
+
+  /* End of Switch: '<S60>/OpenSpeedSigned' */
+
   /* RateTransition: '<S1>/Rate Transition3' */
   if (rtM->Timing.TaskCounters.TID[1] == 0) {
     /* RateTransition: '<S1>/Rate Transition3' */
@@ -518,10 +548,11 @@ void FOC_step(void)
 
     /* Update for DiscreteIntegrator: '<S120>/Discrete-Time Integrator' incorporates:
      *  Gain: '<S120>/Gain'
+     *  Gain: '<S120>/Gain1'
      *  Product: '<S120>/Product'
      */
-    rtDW.DiscreteTimeIntegrator_DSTATE_l += motor.Pn * 62.8318558F *
-      0.333333343F * 0.0001F;
+    rtDW.DiscreteTimeIntegrator_DSTATE_l += 0.104719758F * (real32_T)
+      rtb_OpenSpeedSigned * motor.Pn * 0.333333343F * 0.0001F;
     if (rtDW.ZReset > 0.0) {
       rtDW.DiscreteTimeIntegrator_PrevRese = 1;
     } else if (rtDW.ZReset < 0.0) {
@@ -562,23 +593,23 @@ void FOC_step(void)
 
     /* If: '<S122>/If' incorporates:
      *  Constant: '<S122>/Constant1'
-     *  Constant: '<S123>/Constant'
-     *  Constant: '<S127>/Const_2pi_a'
-     *  Constant: '<S127>/Const_pi_a'
-     *  Constant: '<S127>/Const_pi_b'
-     *  Math: '<S127>/Mod_2pi'
-     *  Product: '<S127>/Alpha_times_delta'
-     *  SignalConversion generated from: '<S123>/Out1'
+     *  Constant: '<S124>/Constant'
+     *  Constant: '<S128>/Const_2pi_a'
+     *  Constant: '<S128>/Const_pi_a'
+     *  Constant: '<S128>/Const_pi_b'
+     *  Math: '<S128>/Mod_2pi'
+     *  Product: '<S128>/Alpha_times_delta'
+     *  SignalConversion generated from: '<S124>/Out1'
      *  Sum: '<S122>/Add'
-     *  Sum: '<S127>/Add_pi'
-     *  Sum: '<S127>/Delta_hat_open'
-     *  Sum: '<S127>/Sub_pi'
+     *  Sum: '<S128>/Add_pi'
+     *  Sum: '<S128>/Delta_hat_open'
+     *  Sum: '<S128>/Sub_pi'
      *  UnitDelay: '<S122>/Unit Delay'
      *  UnitDelay: '<S60>/Unit Delay1'
      */
     if (rtDW.UnitDelay_DSTATE + 0.001F >= 1.0F) {
       /* Outputs for IfAction SubSystem: '<S122>/If Action Subsystem' incorporates:
-       *  ActionPort: '<S123>/Action Port'
+       *  ActionPort: '<S124>/Action Port'
        */
       rtb_DiscreteTimeIntegrator = 1.0F;
 
@@ -593,29 +624,29 @@ void FOC_step(void)
 
     /* End of If: '<S122>/If' */
 
-    /* RateLimiter: '<S127>/CorrectionRateLimit' */
-    rtb_IProdOut = rtb_Saturation_l - rtDW.PrevY;
+    /* RateLimiter: '<S128>/CorrectionRateLimit' */
+    rtb_DeadZone_fw = rtb_Saturation_l - rtDW.PrevY;
     rtb_DiscreteTimeIntegrator = (real32_T)
-      (handover_cfg.theta_handover_slew_limit * period);
-    if (rtb_IProdOut > rtb_DiscreteTimeIntegrator) {
+      (handover_cfg.theta_handover_slew_limit * (real32_T)period);
+    if (rtb_DeadZone_fw > rtb_DiscreteTimeIntegrator) {
       rtb_Saturation_l = rtb_DiscreteTimeIntegrator + rtDW.PrevY;
     } else {
       rtb_DiscreteTimeIntegrator = (real32_T)
-        (-handover_cfg.theta_handover_slew_limit * period);
-      if (rtb_IProdOut < rtb_DiscreteTimeIntegrator) {
+        (-handover_cfg.theta_handover_slew_limit * (real32_T)period);
+      if (rtb_DeadZone_fw < rtb_DiscreteTimeIntegrator) {
         rtb_Saturation_l = rtb_DiscreteTimeIntegrator + rtDW.PrevY;
       }
     }
 
     rtDW.PrevY = rtb_Saturation_l;
 
-    /* End of RateLimiter: '<S127>/CorrectionRateLimit' */
+    /* End of RateLimiter: '<S128>/CorrectionRateLimit' */
 
     /* Merge: '<S60>/Merge' incorporates:
-     *  Constant: '<S127>/Const_2pi_b'
-     *  Math: '<S127>/Wrap_2pi'
+     *  Constant: '<S128>/Const_2pi_b'
+     *  Math: '<S128>/Wrap_2pi'
      *  SignalConversion generated from: '<S122>/Theta_fd'
-     *  Sum: '<S127>/Add_correction'
+     *  Sum: '<S128>/Add_correction'
      */
     rtDW.Merge = rt_modf(rtb_theta + rtb_Saturation_l, 6.28318548F);
 
@@ -654,8 +685,10 @@ void FOC_step(void)
 
     /* Update for DiscreteIntegrator: '<S122>/Discrete-Time Integrator1' incorporates:
      *  Gain: '<S122>/Gain'
+     *  Gain: '<S122>/Gain1'
      */
-    rtDW.DiscreteTimeIntegrator1_DSTATE += motor.Pn * 62.8318558F * 0.0001F;
+    rtDW.DiscreteTimeIntegrator1_DSTATE += 0.104719758F * (real32_T)
+      rtb_OpenSpeedSigned * motor.Pn * 0.0001F;
 
     /* Update for DiscreteIntegrator: '<S122>/Discrete-Time Integrator' incorporates:
      *  Constant: '<S122>/Constant5'
@@ -670,6 +703,49 @@ void FOC_step(void)
     /* Outputs for IfAction SubSystem: '<S60>/If Action Subsystem3' incorporates:
      *  ActionPort: '<S121>/Action Port'
      */
+    rtb_RefDir = 0;
+    if (rtU.SpeedRefToFOC > 0.0F) {
+      rtb_RefDir = 1;
+    } else if (rtU.SpeedRefToFOC < 0.0F) {
+      rtb_RefDir = -1;
+    }
+
+    if (rtRunStagePrevMotorState != 5.0) {
+      real32_T rtb_RunStageIqPreset = handover_cfg.iq_handover;
+
+      if (rtb_RefDir < 0) {
+        rtb_RunStageIqPreset = -rtb_RunStageIqPreset;
+      }
+
+      rtClosedLoopDir = rtb_RefDir;
+      rtDW.Saturation = rtb_RunStageIqPreset;
+      rtDW.RateTransition3 = rtb_RunStageIqPreset;
+      rtDW.RateTransition3_Buffer0 = rtb_RunStageIqPreset;
+      rtDW.Integrator_DSTATE_i = rtb_RunStageIqPreset;
+      rtDW.Integrator_PREV_U = 0.0F;
+      rtDW.Integrator_PrevResetState = 1;
+      rtDW.Integrator_SYSTEM_ENABLE = 0U;
+      rtRunHandoverTicks = FOC_SPEED_LOOP_DELAY_TICKS;
+    }
+
+    if (rtClosedLoopDir == 0) {
+      rtClosedLoopDir = rtb_RefDir;
+    } else if ((rtb_RefDir != 0) && (rtb_RefDir != rtClosedLoopDir) &&
+               (rtReverseOpenTicks == 0U) && (rtReverseAlignTicks == 0U)) {
+      rtReverseDir = rtb_RefDir;
+      rtReverseOpenTicks = FOC_REVERSE_CROSS_TICKS;
+      rtReverseAlignTicks = 0U;
+      rtRunHandoverTicks = 0U;
+      rtReverseTheta = FluxTheta;
+      rtReverseOmegaElec = 0.0F;
+      rtReverseThetaCorrection = 0.0F;
+      rtDW.Saturation = (real32_T)rtReverseDir * handover_cfg.iq_handover;
+      rtDW.RateTransition3 = rtDW.Saturation;
+      rtDW.RateTransition3_Buffer0 = rtDW.Saturation;
+      rtDW.Integrator_DSTATE_i = rtDW.Saturation;
+      rtDW.Integrator_PREV_U = 0.0F;
+    }
+
     /* Merge: '<S60>/Merge' incorporates:
      *  SignalConversion generated from: '<S121>/theta_Close'
      *  UnitDelay: '<S60>/Unit Delay1'
@@ -681,17 +757,105 @@ void FOC_step(void)
      */
     rtDW.Merge1 = rtDW.RateTransition3;
 
+    if ((rtRunHandoverTicks > 0U) && (rtReverseOpenTicks == 0U) &&
+        (rtReverseAlignTicks == 0U)) {
+      real32_T rtb_RunHandoverIq = handover_cfg.iq_handover;
+
+      if (rtClosedLoopDir < 0) {
+        rtb_RunHandoverIq = -rtb_RunHandoverIq;
+      }
+
+      rtDW.Merge1 = rtb_RunHandoverIq;
+      rtRunHandoverTicks--;
+      rtb_RunHandoverActive = true;
+    }
+
+    if (rtReverseOpenTicks > 0U) {
+      real32_T rtb_ReverseOmegaMax = 0.104719758F *
+        FOC_REVERSE_OPEN_SPEED_RPM * motor.Pn;
+      rtReverseOmegaElec += (real32_T)rtReverseDir * rtb_ReverseOmegaMax /
+        (real32_T)FOC_REVERSE_CROSS_TICKS;
+      rtReverseTheta = rt_modf(rtReverseTheta + 0.0001F * rtReverseOmegaElec,
+        6.28318548F);
+      rtDW.Merge = rtReverseTheta;
+      rtDW.Merge1 = (real32_T)rtReverseDir * FOC_REVERSE_OPEN_IQ_REF;
+      rtReverseOpenTicks--;
+      rtb_ReverseControlActive = true;
+
+      if (rtReverseOpenTicks == 0U) {
+        rtReverseAlignTicks = FOC_REVERSE_ALIGN_TICKS;
+        rtReverseThetaCorrection = 0.0F;
+      }
+    } else if (rtReverseAlignTicks > 0U) {
+      real32_T rtb_ReverseAlignAlpha = (real32_T)
+        ((FOC_REVERSE_ALIGN_TICKS - rtReverseAlignTicks) + 1U) /
+        (real32_T)FOC_REVERSE_ALIGN_TICKS;
+      real32_T rtb_ReverseCorrection = (rt_modf((FluxTheta - rtReverseTheta) +
+        3.14159274F, 6.28318548F) - 3.14159274F) * rtb_ReverseAlignAlpha;
+      real32_T rtb_ReverseCorrectionStep = rtb_ReverseCorrection -
+        rtReverseThetaCorrection;
+      real32_T rtb_ReverseCorrectionLimit = (real32_T)
+        handover_cfg.theta_handover_slew_limit * (real32_T)period;
+      real32_T rtb_ReverseIqHandover = (real32_T)rtReverseDir *
+        handover_cfg.iq_handover;
+
+      if (rtb_ReverseCorrectionStep > rtb_ReverseCorrectionLimit) {
+        rtb_ReverseCorrection = rtReverseThetaCorrection +
+          rtb_ReverseCorrectionLimit;
+      } else {
+        rtb_ReverseCorrectionLimit = -rtb_ReverseCorrectionLimit;
+        if (rtb_ReverseCorrectionStep < rtb_ReverseCorrectionLimit) {
+          rtb_ReverseCorrection = rtReverseThetaCorrection +
+            rtb_ReverseCorrectionLimit;
+        }
+      }
+
+      rtReverseThetaCorrection = rtb_ReverseCorrection;
+      rtDW.Merge = rt_modf(rtReverseTheta + rtReverseThetaCorrection,
+                           6.28318548F);
+      rtDW.Merge1 = ((real32_T)rtReverseDir * FOC_REVERSE_OPEN_IQ_REF *
+                     (1.0F - rtb_ReverseAlignAlpha)) +
+        (rtb_ReverseIqHandover * rtb_ReverseAlignAlpha);
+      rtReverseAlignTicks--;
+      rtb_ReverseControlActive = true;
+
+      if (rtReverseAlignTicks == 0U) {
+        rtClosedLoopDir = rtReverseDir;
+        rtDW.Saturation = rtb_ReverseIqHandover;
+        rtDW.RateTransition3 = rtb_ReverseIqHandover;
+        rtDW.RateTransition3_Buffer0 = rtb_ReverseIqHandover;
+        rtDW.Integrator_DSTATE_i = rtb_ReverseIqHandover;
+        rtDW.Integrator_PREV_U = 0.0F;
+      }
+    }
+
     /* End of Outputs for SubSystem: '<S60>/If Action Subsystem3' */
     break;
   }
 
   /* End of SwitchCase: '<S60>/Switch Case' */
+  rtRunStagePrevMotorState = rtDW.Motor_state;
+  FocDiagState = (real32_T)rtDW.Motor_state;
+  if (rtReverseOpenTicks > 0U) {
+    FocDiagState = 6.0F;
+  } else if (rtReverseAlignTicks > 0U) {
+    FocDiagState = 7.0F;
+  }
 
   /* Trigonometry: '<S3>/Sin' */
   rtb_Sin = sinf(rtDW.Merge);
 
   /* Trigonometry: '<S3>/Cos' */
   rtb_Cos = cosf(rtDW.Merge);
+
+  /* Outputs for Atomic SubSystem: '<S3>/Clark' */
+  /* Inport: '<Root>/ia' incorporates:
+   *  Inport: '<Root>/ib'
+   *  Inport: '<Root>/ic'
+   */
+  Clark(rtU.ia, rtU.ib, rtU.ic, &rtb_Add1_k, &rtb_Gain2);
+
+  /* End of Outputs for SubSystem: '<S3>/Clark' */
 
   /* Outputs for Atomic SubSystem: '<S3>/Park' */
   Park(rtb_Add1_k, rtb_Gain2, rtb_Sin, rtb_Cos, &rtb_DiscreteTimeIntegrator,
@@ -702,43 +866,43 @@ void FOC_step(void)
   FocDiagIq = rtb_Integrator_jp;
   FocDiagIdRef = 0.0F;
   FocDiagIqRef = rtDW.Merge1;
-  FocDiagState = (real32_T)rtDW.Motor_state;
 
   /* Sum: '<S61>/Sum1' incorporates:
    *  Constant: '<S61>/Constant'
    */
-  rtb_theta = 0.0F - rtb_DiscreteTimeIntegrator;
+  rtb_Sum1 = 0.0F - rtb_DiscreteTimeIntegrator;
 
-  /* Sum: '<S172>/Sum' incorporates:
+  /* Sum: '<S173>/Sum' incorporates:
    *  Constant: '<S61>/Constant'
    *  Constant: '<S61>/Constant3'
-   *  DiscreteIntegrator: '<S163>/Integrator'
-   *  Product: '<S168>/PProd Out'
+   *  DiscreteIntegrator: '<S164>/Integrator'
+   *  Product: '<S169>/PProd Out'
    *  Sum: '<S61>/Sum1'
    */
-  rtb_Saturation_l = (0.0F - rtb_DiscreteTimeIntegrator) * curr_kpki.curr_d_kp +
+  rtb_theta = (0.0F - rtb_DiscreteTimeIntegrator) * curr_kpki.curr_d_kp +
     (real32_T)rtDW.Integrator_DSTATE_h * 0.0001F;
 
   /* Sum: '<S61>/Sum7' */
-  rtb_IProdOut = rtDW.Merge1 - rtb_Integrator_jp;
+  rtb_Saturation_l = rtDW.Merge1 - rtb_Integrator_jp;
 
-  /* Sum: '<S222>/Sum' incorporates:
+  /* Sum: '<S223>/Sum' incorporates:
    *  Constant: '<S61>/Constant1'
-   *  DiscreteIntegrator: '<S213>/Integrator'
-   *  Product: '<S218>/PProd Out'
+   *  DiscreteIntegrator: '<S214>/Integrator'
+   *  Product: '<S219>/PProd Out'
    */
-  rtb_DeadZone_fw = rtb_IProdOut * curr_kpki.curr_q_kp + rtDW.Integrator_DSTATE;
+  rtb_DeadZone_fw = rtb_Saturation_l * curr_kpki.curr_q_kp +
+    rtDW.Integrator_DSTATE;
 
-  /* Saturate: '<S170>/Saturation' */
-  if (rtb_Saturation_l > 12.4707661F) {
+  /* Saturate: '<S171>/Saturation' */
+  if (rtb_theta > 12.4707661F) {
     rtb_DiscreteTimeIntegrator = 12.4707661F;
-  } else if (rtb_Saturation_l < -12.4707661F) {
+  } else if (rtb_theta < -12.4707661F) {
     rtb_DiscreteTimeIntegrator = -12.4707661F;
   } else {
-    rtb_DiscreteTimeIntegrator = rtb_Saturation_l;
+    rtb_DiscreteTimeIntegrator = rtb_theta;
   }
 
-  /* Saturate: '<S220>/Saturation' */
+  /* Saturate: '<S221>/Saturation' */
   if (rtb_DeadZone_fw > 12.4707661F) {
     rtb_Integrator_jp = 12.4707661F;
   } else if (rtb_DeadZone_fw < -12.4707661F) {
@@ -747,13 +911,13 @@ void FOC_step(void)
     rtb_Integrator_jp = rtb_DeadZone_fw;
   }
 
-  /* Outputs for Atomic SubSystem: '<S3>/In_park' */
-  /* Saturate: '<S170>/Saturation' incorporates:
-   *  Saturate: '<S220>/Saturation'
-   */
   FocDiagUd = rtb_DiscreteTimeIntegrator;
   FocDiagUq = rtb_Integrator_jp;
 
+  /* Outputs for Atomic SubSystem: '<S3>/In_park' */
+  /* Saturate: '<S171>/Saturation' incorporates:
+   *  Saturate: '<S221>/Saturation'
+   */
   In_park(rtb_DiscreteTimeIntegrator, rtb_Integrator_jp, rtb_Sin, rtb_Cos,
           &rtb_Add_d, &rtb_Add1);
 
@@ -883,6 +1047,55 @@ void FOC_step(void)
 
   /* RateTransition: '<S1>/Rate Transition' */
   if (rtM->Timing.TaskCounters.TID[1] == 0) {
+    rtb_RateTransition = FluxWm;
+  }
+
+  /* End of RateTransition: '<S1>/Rate Transition' */
+
+  /* Math: '<S63>/mod' incorporates:
+   *  Constant: '<S63>/2pi'
+   *  Gain: '<S63>/Ts'
+   *  Sum: '<S63>/theta_next'
+   *  UnitDelay: '<S63>/theta_z1'
+   */
+  FluxTheta = rt_modf(0.0001F * rtb_Sin + rtDW.theta_z1_DSTATE, 6.28318548F);
+
+  /* DeadZone: '<S207>/DeadZone' */
+  if (rtb_DeadZone_fw > 12.4707661F) {
+    rtb_DeadZone_fw -= 12.4707661F;
+  } else if (rtb_DeadZone_fw >= -12.4707661F) {
+    rtb_DeadZone_fw = 0.0F;
+  } else {
+    rtb_DeadZone_fw -= -12.4707661F;
+  }
+
+  /* End of DeadZone: '<S207>/DeadZone' */
+
+  /* Product: '<S211>/IProd Out' incorporates:
+   *  Constant: '<S61>/Constant2'
+   */
+  rtb_Saturation_l *= curr_kpki.curr_q_ki;
+
+  /* DeadZone: '<S157>/DeadZone' */
+  if (rtb_theta > 12.4707661F) {
+    rtb_theta -= 12.4707661F;
+  } else if (rtb_theta >= -12.4707661F) {
+    rtb_theta = 0.0F;
+  } else {
+    rtb_theta -= -12.4707661F;
+  }
+
+  /* End of DeadZone: '<S157>/DeadZone' */
+
+  /* Product: '<S161>/IProd Out' incorporates:
+   *  Constant: '<S61>/Constant4'
+   */
+  rtb_IProdOut_c = (int16_T)floorf(rtb_Sum1 * curr_kpki.curr_d_ki);
+
+  /* RateTransition: '<S1>/Rate Transition2' incorporates:
+   *  RateTransition: '<S1>/Rate Transition3'
+   */
+  if (rtM->Timing.TaskCounters.TID[1] == 0) {
     /* S-Function (fcgen): '<S1>/Function-Call Generator' incorporates:
      *  SubSystem: '<S1>/Speed_loop'
      */
@@ -898,21 +1111,19 @@ void FOC_step(void)
     /* Sum: '<S2>/Sum2' incorporates:
      *  Inport: '<Root>/Speed_ref'
      */
-    rtb_Add1_k = rtU.RefSpeed - FluxWm;
+    rtb_RateTransition = rtU.SpeedRefToFOC - rtb_RateTransition;
 
-    /* DiscreteIntegrator: '<S38>/Integrator' incorporates:
-     *  RateTransition: '<S1>/Rate Transition2'
-     */
+    /* DiscreteIntegrator: '<S38>/Integrator' */
     if (rtDW.Integrator_SYSTEM_ENABLE != 0) {
       /* DiscreteIntegrator: '<S38>/Integrator' */
-      rtb_Gain2 = rtDW.Integrator_DSTATE_i;
+      rtb_Add1_k = rtDW.Integrator_DSTATE_i;
     } else if ((rtDW.RestsSingal > 0.0) && (rtDW.Integrator_PrevResetState <= 0))
     {
       /* DiscreteIntegrator: '<S38>/Integrator' */
-      rtb_Gain2 = 0.0F;
+      rtb_Add1_k = 0.0F;
     } else {
       /* DiscreteIntegrator: '<S38>/Integrator' */
-      rtb_Gain2 = (real32_T)(0.001 * (real_T)Speed_loop_ELAPS_T
+      rtb_Add1_k = (real32_T)(0.001 * (real_T)Speed_loop_ELAPS_T
         * rtDW.Integrator_PREV_U) + rtDW.Integrator_DSTATE_i;
     }
 
@@ -921,41 +1132,39 @@ void FOC_step(void)
     /* Sum: '<S47>/Sum' incorporates:
      *  Gain: '<S43>/Proportional Gain'
      */
-    rtb_Add_d = spd_kpki.spd_kp * rtb_Add1_k + rtb_Gain2;
+    rtb_Gain2 = spd_kpki.spd_kp * rtb_RateTransition + rtb_Add1_k;
 
     /* Saturate: '<S45>/Saturation' incorporates:
      *  DeadZone: '<S31>/DeadZone'
      */
-    if (rtb_Add_d > 3.0F) {
+    if (rtb_Gain2 > 3.0F) {
       /* Saturate: '<S45>/Saturation' */
       rtDW.Saturation = 3.0F;
-      rtb_Add_d -= 3.0F;
+      rtb_Gain2 -= 3.0F;
     } else {
-      if (rtb_Add_d < -3.0F) {
+      if (rtb_Gain2 < -3.0F) {
         /* Saturate: '<S45>/Saturation' */
         rtDW.Saturation = -3.0F;
       } else {
         /* Saturate: '<S45>/Saturation' */
-        rtDW.Saturation = rtb_Add_d;
+        rtDW.Saturation = rtb_Gain2;
       }
 
-      if (rtb_Add_d >= -3.0F) {
-        rtb_Add_d = 0.0F;
+      if (rtb_Gain2 >= -3.0F) {
+        rtb_Gain2 = 0.0F;
       } else {
-        rtb_Add_d -= -3.0F;
+        rtb_Gain2 -= -3.0F;
       }
     }
 
     /* End of Saturate: '<S45>/Saturation' */
 
     /* Gain: '<S35>/Integral Gain' */
-    rtb_Add1_k *= spd_kpki.spd_ki;
+    rtb_RateTransition *= spd_kpki.spd_ki;
 
-    /* Update for DiscreteIntegrator: '<S38>/Integrator' incorporates:
-     *  RateTransition: '<S1>/Rate Transition2'
-     */
+    /* Update for DiscreteIntegrator: '<S38>/Integrator' */
     rtDW.Integrator_SYSTEM_ENABLE = 0U;
-    rtDW.Integrator_DSTATE_i = rtb_Gain2;
+    rtDW.Integrator_DSTATE_i = rtb_Add1_k;
     if (rtDW.RestsSingal > 0.0) {
       rtDW.Integrator_PrevResetState = 1;
     } else if (rtDW.RestsSingal < 0.0) {
@@ -972,7 +1181,7 @@ void FOC_step(void)
      *  Constant: '<S29>/Constant2'
      *  RelationalOperator: '<S29>/fix for DT propagation issue'
      */
-    if (rtb_Add_d > 0.0F) {
+    if (rtb_Gain2 > 0.0F) {
       tmp = 1;
     } else {
       tmp = -1;
@@ -984,7 +1193,7 @@ void FOC_step(void)
      *  Constant: '<S29>/Constant4'
      *  RelationalOperator: '<S29>/fix for DT propagation issue1'
      */
-    if (rtb_Add1_k > 0.0F) {
+    if (rtb_RateTransition > 0.0F) {
       tmp_0 = 1;
     } else {
       tmp_0 = -1;
@@ -998,85 +1207,60 @@ void FOC_step(void)
      *  Switch: '<S29>/Switch1'
      *  Switch: '<S29>/Switch2'
      */
-    if ((rtb_Add_d != 0.0F) && (tmp == tmp_0)) {
+    if ((rtb_Gain2 != 0.0F) && (tmp == tmp_0)) {
       /* Update for DiscreteIntegrator: '<S38>/Integrator' incorporates:
        *  Constant: '<S29>/Constant1'
        */
       rtDW.Integrator_PREV_U = 0.0F;
     } else {
       /* Update for DiscreteIntegrator: '<S38>/Integrator' */
-      rtDW.Integrator_PREV_U = rtb_Add1_k;
+      rtDW.Integrator_PREV_U = rtb_RateTransition;
     }
 
     /* End of Switch: '<S29>/Switch' */
     /* End of Outputs for S-Function (fcgen): '<S1>/Function-Call Generator' */
-  }
-
-  /* End of RateTransition: '<S1>/Rate Transition' */
-
-  /* Math: '<S63>/mod' incorporates:
-   *  Constant: '<S63>/2pi'
-   *  Gain: '<S63>/Ts'
-   *  Sum: '<S63>/theta_next'
-   *  UnitDelay: '<S63>/theta_z1'
-   */
-  FluxTheta = rt_modf(0.0001F * rtb_Sin + rtDW.theta_z1_DSTATE, 6.28318548F);
-
-  /* DeadZone: '<S156>/DeadZone' */
-  if (rtb_Saturation_l > 12.4707661F) {
-    rtb_Saturation_l -= 12.4707661F;
-  } else if (rtb_Saturation_l >= -12.4707661F) {
-    rtb_Saturation_l = 0.0F;
-  } else {
-    rtb_Saturation_l -= -12.4707661F;
-  }
-
-  /* End of DeadZone: '<S156>/DeadZone' */
-
-  /* Product: '<S160>/IProd Out' incorporates:
-   *  Constant: '<S61>/Constant4'
-   */
-  rtb_IProdOut_c = (int16_T)floorf(rtb_theta * curr_kpki.curr_d_ki);
-
-  /* DeadZone: '<S206>/DeadZone' */
-  if (rtb_DeadZone_fw > 12.4707661F) {
-    rtb_DeadZone_fw -= 12.4707661F;
-  } else if (rtb_DeadZone_fw >= -12.4707661F) {
-    rtb_DeadZone_fw = 0.0F;
-  } else {
-    rtb_DeadZone_fw -= -12.4707661F;
-  }
-
-  /* End of DeadZone: '<S206>/DeadZone' */
-
-  /* Product: '<S210>/IProd Out' incorporates:
-   *  Constant: '<S61>/Constant2'
-   */
-  rtb_IProdOut *= curr_kpki.curr_q_ki;
-
-  /* Update for RateTransition: '<S1>/Rate Transition3' */
-  if (rtM->Timing.TaskCounters.TID[1] == 0) {
     rtDW.RateTransition3_Buffer0 = rtDW.Saturation;
   }
 
-  /* End of Update for RateTransition: '<S1>/Rate Transition3' */
+  /* End of RateTransition: '<S1>/Rate Transition2' */
+  if (rtb_ReverseControlActive || rtb_RunHandoverActive) {
+    int8_T rtb_IqHoldDir = rtClosedLoopDir;
+    real32_T rtb_IqHold;
 
-  /* Switch: '<S154>/Switch1' incorporates:
-   *  Constant: '<S154>/Constant'
-   *  Constant: '<S154>/Constant2'
-   *  RelationalOperator: '<S154>/fix for DT propagation issue'
+    if (rtb_ReverseControlActive) {
+      rtb_IqHoldDir = rtReverseDir;
+    }
+
+    if (rtb_IqHoldDir == 0) {
+      rtb_IqHoldDir = 1;
+    }
+
+    rtb_IqHold = (real32_T)rtb_IqHoldDir * handover_cfg.iq_handover;
+    rtDW.Saturation = rtb_IqHold;
+    rtDW.RateTransition3 = rtb_IqHold;
+    rtDW.RateTransition3_Buffer0 = rtb_IqHold;
+    rtDW.Integrator_DSTATE_i = rtb_IqHold;
+    rtDW.Integrator_PREV_U = 0.0F;
+    rtDW.Integrator_PrevResetState = 1;
+    rtDW.Integrator_SYSTEM_ENABLE = 0U;
+  }
+
+  /* Switch: '<S155>/Switch1' incorporates:
+   *  Constant: '<S155>/Constant'
+   *  Constant: '<S155>/Constant2'
+   *  RelationalOperator: '<S155>/fix for DT propagation issue'
    */
-  if (rtb_Saturation_l > 0.0F) {
+  if (rtb_theta > 0.0F) {
     tmp = 1;
   } else {
     tmp = -1;
   }
 
-  /* Switch: '<S154>/Switch2' incorporates:
-   *  Constant: '<S154>/Clamping_zero'
-   *  Constant: '<S154>/Constant3'
-   *  Constant: '<S154>/Constant4'
-   *  RelationalOperator: '<S154>/fix for DT propagation issue1'
+  /* Switch: '<S155>/Switch2' incorporates:
+   *  Constant: '<S155>/Clamping_zero'
+   *  Constant: '<S155>/Constant3'
+   *  Constant: '<S155>/Constant4'
+   *  RelationalOperator: '<S155>/fix for DT propagation issue1'
    */
   if (rtb_IProdOut_c > 0) {
     tmp_0 = 1;
@@ -1084,28 +1268,28 @@ void FOC_step(void)
     tmp_0 = -1;
   }
 
-  /* Switch: '<S154>/Switch' incorporates:
-   *  Constant: '<S154>/Constant1'
-   *  Logic: '<S154>/AND3'
-   *  RelationalOperator: '<S154>/Equal1'
-   *  RelationalOperator: '<S154>/Relational Operator'
-   *  Switch: '<S154>/Switch1'
-   *  Switch: '<S154>/Switch2'
+  /* Switch: '<S155>/Switch' incorporates:
+   *  Constant: '<S155>/Constant1'
+   *  Logic: '<S155>/AND3'
+   *  RelationalOperator: '<S155>/Equal1'
+   *  RelationalOperator: '<S155>/Relational Operator'
+   *  Switch: '<S155>/Switch1'
+   *  Switch: '<S155>/Switch2'
    */
-  if ((rtb_Saturation_l != 0.0F) && (tmp == tmp_0)) {
+  if ((rtb_theta != 0.0F) && (tmp == tmp_0)) {
     rtb_IProdOut_c = 0;
   }
 
-  /* Update for DiscreteIntegrator: '<S163>/Integrator' incorporates:
-   *  Switch: '<S154>/Switch'
+  /* Update for DiscreteIntegrator: '<S164>/Integrator' incorporates:
+   *  Switch: '<S155>/Switch'
    */
   rtDW.Integrator_DSTATE_h += rtb_IProdOut_c;
 
-  /* Switch: '<S204>/Switch1' incorporates:
-   *  Constant: '<S204>/Clamping_zero'
-   *  Constant: '<S204>/Constant'
-   *  Constant: '<S204>/Constant2'
-   *  RelationalOperator: '<S204>/fix for DT propagation issue'
+  /* Switch: '<S205>/Switch1' incorporates:
+   *  Constant: '<S205>/Clamping_zero'
+   *  Constant: '<S205>/Constant'
+   *  Constant: '<S205>/Constant2'
+   *  RelationalOperator: '<S205>/fix for DT propagation issue'
    */
   if (rtb_DeadZone_fw > 0.0F) {
     tmp = 1;
@@ -1113,35 +1297,35 @@ void FOC_step(void)
     tmp = -1;
   }
 
-  /* Switch: '<S204>/Switch2' incorporates:
-   *  Constant: '<S204>/Clamping_zero'
-   *  Constant: '<S204>/Constant3'
-   *  Constant: '<S204>/Constant4'
-   *  RelationalOperator: '<S204>/fix for DT propagation issue1'
+  /* Switch: '<S205>/Switch2' incorporates:
+   *  Constant: '<S205>/Clamping_zero'
+   *  Constant: '<S205>/Constant3'
+   *  Constant: '<S205>/Constant4'
+   *  RelationalOperator: '<S205>/fix for DT propagation issue1'
    */
-  if (rtb_IProdOut > 0.0F) {
+  if (rtb_Saturation_l > 0.0F) {
     tmp_0 = 1;
   } else {
     tmp_0 = -1;
   }
 
-  /* Switch: '<S204>/Switch' incorporates:
-   *  Constant: '<S204>/Clamping_zero'
-   *  Constant: '<S204>/Constant1'
-   *  Logic: '<S204>/AND3'
-   *  RelationalOperator: '<S204>/Equal1'
-   *  RelationalOperator: '<S204>/Relational Operator'
-   *  Switch: '<S204>/Switch1'
-   *  Switch: '<S204>/Switch2'
+  /* Switch: '<S205>/Switch' incorporates:
+   *  Constant: '<S205>/Clamping_zero'
+   *  Constant: '<S205>/Constant1'
+   *  Logic: '<S205>/AND3'
+   *  RelationalOperator: '<S205>/Equal1'
+   *  RelationalOperator: '<S205>/Relational Operator'
+   *  Switch: '<S205>/Switch1'
+   *  Switch: '<S205>/Switch2'
    */
   if ((rtb_DeadZone_fw != 0.0F) && (tmp == tmp_0)) {
-    rtb_IProdOut = 0.0F;
+    rtb_Saturation_l = 0.0F;
   }
 
-  /* Update for DiscreteIntegrator: '<S213>/Integrator' incorporates:
-   *  Switch: '<S204>/Switch'
+  /* Update for DiscreteIntegrator: '<S214>/Integrator' incorporates:
+   *  Switch: '<S205>/Switch'
    */
-  rtDW.Integrator_DSTATE += 0.0001F * rtb_IProdOut;
+  rtDW.Integrator_DSTATE += 0.0001F * rtb_Saturation_l;
 
   /* Update for UnitDelay: '<S64>/x2_delay' */
   rtDW.x2_delay_DSTATE = rtb_Add1;
@@ -1176,6 +1360,16 @@ void FOC_step(void)
 /* Model initialize function */
 void FOC_initialize(void)
 {
+  rtRunStagePrevMotorState = 0.0;
+  rtClosedLoopDir = 0;
+  rtReverseDir = 0;
+  rtReverseOpenTicks = 0U;
+  rtReverseAlignTicks = 0U;
+  rtRunHandoverTicks = 0U;
+  rtReverseTheta = 0.0F;
+  rtReverseOmegaElec = 0.0F;
+  rtReverseThetaCorrection = 0.0F;
+
   /* SystemInitialize for IfAction SubSystem: '<S60>/If Action Subsystem2' */
   /* InitializeConditions for DiscreteIntegrator: '<S120>/Discrete-Time Integrator' */
   rtDW.DiscreteTimeIntegrator_PrevRese = 2;

@@ -949,6 +949,36 @@ class CommandSendTest(unittest.TestCase):
         self.assertEqual(sent, [("SPD=120.0", True)])
         self.assertEqual(window.speed_spin.value(), 120.0)
 
+    def test_speed_command_allows_reverse_speed_above_sensorless_min(self):
+        window = host.MyFocHostWindow()
+        sent = []
+
+        with mock.patch.object(
+            window,
+            "send_command",
+            side_effect=lambda command, announce=True: sent.append((command, announce)),
+        ), mock.patch.object(host.QtCore.QTimer, "singleShot"):
+            window.speed_spin.setValue(-600.0)
+            window.send_speed()
+
+        self.assertEqual(sent, [("SPD=-600.0", True)])
+        self.assertEqual(window.speed_spin.value(), -600.0)
+
+    def test_speed_command_clamps_small_reverse_speed_to_sensorless_min(self):
+        window = host.MyFocHostWindow()
+        sent = []
+
+        with mock.patch.object(
+            window,
+            "send_command",
+            side_effect=lambda command, announce=True: sent.append((command, announce)),
+        ), mock.patch.object(host.QtCore.QTimer, "singleShot"):
+            window.speed_spin.setValue(-100.0)
+            window.send_speed()
+
+        self.assertEqual(sent, [("SPD=-120.0", True)])
+        self.assertEqual(window.speed_spin.value(), -120.0)
+
     def test_speed_command_clamps_above_configured_max_speed(self):
         window = host.MyFocHostWindow()
         sent = []
@@ -963,6 +993,41 @@ class CommandSendTest(unittest.TestCase):
 
         self.assertEqual(sent, [("SPD=1800.0", True)])
         self.assertEqual(window.speed_spin.value(), 1800.0)
+
+    def test_speed_command_clamps_below_reverse_max_speed(self):
+        window = host.MyFocHostWindow()
+        sent = []
+
+        with mock.patch.object(
+            window,
+            "send_command",
+            side_effect=lambda command, announce=True: sent.append((command, announce)),
+        ), mock.patch.object(host.QtCore.QTimer, "singleShot"):
+            window.speed_spin.setValue(-2500.0)
+            window.send_speed()
+
+        self.assertEqual(sent, [("SPD=-1800.0", True)])
+        self.assertEqual(window.speed_spin.value(), -1800.0)
+
+    def test_speed_command_sends_signed_reverse_reference_without_restart(self):
+        window = host.MyFocHostWindow()
+        self.addCleanup(window.close)
+        self.addCleanup(window.deleteLater)
+        sent = []
+
+        window.last_values["foc_state"] = 5.0
+        window.last_values["speed"] = 590.0
+        window.last_values["ref"] = 600.0
+
+        with mock.patch.object(
+            window,
+            "send_command",
+            side_effect=lambda command, announce=True: sent.append((command, announce)),
+        ), mock.patch.object(host.QtCore.QTimer, "singleShot"):
+            window.speed_spin.setValue(-600.0)
+            window.send_speed()
+
+        self.assertEqual(sent, [("SPD=-600.0", True)])
 
 
 class LoggingSchemaTest(unittest.TestCase):
@@ -1030,13 +1095,37 @@ class FirmwareCommandRxTest(unittest.TestCase):
         main_source = (project_root / "Core" / "Src" / "main.c").read_text(encoding="utf-8")
 
         self.assertIn("#define SPEED_SENSORLESS_MIN_RPM 120.0f", main_source)
-        self.assertIn("#define SPEED_MIN_RPM SPEED_SENSORLESS_MIN_RPM", main_source)
+        self.assertIn("#define SPEED_MIN_RPM (-SPEED_MAX_RPM)", main_source)
+        self.assertIn("static float ClampSpeedCommand(float speed);", main_source)
+        self.assertIn("speed = ClampSpeedCommand(speed);", main_source)
+        self.assertIn("return -SPEED_SENSORLESS_MIN_RPM;", main_source)
 
     def test_firmware_clamps_speed_above_configured_max_speed(self):
         project_root = Path(__file__).resolve().parents[1]
         main_source = (project_root / "Core" / "Src" / "main.c").read_text(encoding="utf-8")
 
         self.assertIn("#define SPEED_MAX_RPM 1800.0f", main_source)
+
+    def test_firmware_does_not_restart_on_running_direction_change(self):
+        project_root = Path(__file__).resolve().parents[1]
+        main_source = (project_root / "Core" / "Src" / "main.c").read_text(encoding="utf-8")
+
+        self.assertNotIn("host_restart_pending", main_source)
+        self.assertNotIn("HOST_REVERSE_RESTART_DELAY_MS", main_source)
+        self.assertIn("host_ref_speed = ClampSpeedCommand(speed);", main_source)
+
+    def test_firmware_shapes_speed_reference_without_stop_restart(self):
+        project_root = Path(__file__).resolve().parents[1]
+        main_source = (project_root / "Core" / "Src" / "main.c").read_text(encoding="utf-8")
+
+        self.assertIn("#define SPEED_REF_RAMP_RATE_RPM_PER_S 5000.0f", main_source)
+        self.assertIn("volatile float host_foc_speed_ref = SPEED_DEFAULT_RPM;", main_source)
+        self.assertIn("HostCommand_UpdateSpeedReference(host_foc_speed_ref, host_ref_speed)", main_source)
+        self.assertIn("if (Motor_state == 0U)", main_source)
+        self.assertIn("host_foc_speed_ref = host_ref_speed;", main_source)
+        self.assertIn("return -SPEED_SENSORLESS_MIN_RPM;", main_source)
+        self.assertIn("return SPEED_SENSORLESS_MIN_RPM;", main_source)
+        self.assertIn("rtU.SpeedRefToFOC = host_foc_speed_ref;", main_source)
 
     def test_firmware_sends_diagnostic_telemetry_frame(self):
         project_root = Path(__file__).resolve().parents[1]
@@ -1050,6 +1139,40 @@ class FirmwareCommandRxTest(unittest.TestCase):
         self.assertIn("FocDiagState", foc_header)
         self.assertIn("load_data[16] = FocDiagState;", main_source)
 
+    def test_firmware_generated_code_is_forward_reverse_model(self):
+        project_root = Path(__file__).resolve().parents[1]
+        foc_source = (project_root / "Matlab" / "FOC.c").read_text(encoding="utf-8")
+        foc_header = (project_root / "Matlab" / "FOC.h").read_text(encoding="utf-8")
+
+        self.assertIn("PMSM_NFLUX_v1_1_FwdRev", foc_header)
+        self.assertIn("SpeedRefIsNegative", foc_header)
+        self.assertIn("rtb_OpenSpeedSigned = -600;", foc_source)
+        self.assertIn("rtb_OpenSpeedSigned * motor.Pn", foc_source)
+        self.assertIn("iq_handover", foc_header)
+        self.assertIn("handover_cfg.iq_handover", foc_source)
+        self.assertIn("rtb_RunStageIqPreset = -rtb_RunStageIqPreset;", foc_source)
+        self.assertIn("rtDW.RateTransition3 = rtb_RunStageIqPreset;", foc_source)
+        self.assertIn("rtDW.Integrator_DSTATE_i = rtb_RunStageIqPreset;", foc_source)
+        self.assertIn("FOC_REVERSE_CROSS_TICKS", foc_source)
+        self.assertIn("rtReverseTheta = FluxTheta;", foc_source)
+        self.assertIn("rtDW.Merge = rtReverseTheta;", foc_source)
+        self.assertIn("FocDiagState = 6.0F;", foc_source)
+        self.assertIn("FocDiagState = 7.0F;", foc_source)
+        self.assertIn("if (rtb_ReverseControlActive)", foc_source)
+
+    def test_firmware_delays_speed_loop_after_open_loop_handover(self):
+        project_root = Path(__file__).resolve().parents[1]
+        foc_source = (project_root / "Matlab" / "FOC.c").read_text(encoding="utf-8")
+
+        self.assertIn("FOC_SPEED_LOOP_DELAY_TICKS", foc_source)
+        self.assertIn("static uint16_T rtRunHandoverTicks;", foc_source)
+        self.assertIn("rtRunHandoverTicks = FOC_SPEED_LOOP_DELAY_TICKS;", foc_source)
+        self.assertIn("rtRunHandoverTicks > 0U", foc_source)
+        self.assertIn("rtReverseOpenTicks == 0U", foc_source)
+        self.assertIn("rtReverseAlignTicks == 0U", foc_source)
+        self.assertIn("rtb_RunHandoverActive = true;", foc_source)
+        self.assertIn("if (rtb_ReverseControlActive || rtb_RunHandoverActive)", foc_source)
+
     def test_firmware_diagnostic_order_matches_pc_parser(self):
         project_root = Path(__file__).resolve().parents[1]
         main_source = (project_root / "Core" / "Src" / "main.c").read_text(encoding="utf-8")
@@ -1061,7 +1184,7 @@ class FirmwareCommandRxTest(unittest.TestCase):
             2: "rtU.ic",
             3: "FluxTheta",
             4: "FluxWm",
-            5: "rtU.RefSpeed",
+            5: "rtU.SpeedRefToFOC",
             6: "rtU.v_bus",
             7: "FocDiagId",
             8: "FocDiagIq",

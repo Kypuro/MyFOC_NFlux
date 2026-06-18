@@ -55,8 +55,9 @@ CSV_HEADERS = (
     "Tcmp1", "Tcmp2", "Tcmp3", "FOC_state",
 )
 HISTORY_LEN = 30000
-SPEED_MIN = 120.0
+SPEED_SENSORLESS_MIN = 120.0
 SPEED_MAX = 1800.0
+SPEED_MIN = -SPEED_MAX
 CURRENT_ABS_VALID_MAX = 100.0
 THETA_VALID_MIN = -0.25
 THETA_VALID_MAX = 2.0 * math.pi + 0.25
@@ -79,6 +80,17 @@ PLOT_PANELS = {
         "axes": ("value",),
     },
 }
+
+
+def _clamp_speed_command(value):
+    speed = max(SPEED_MIN, min(SPEED_MAX, float(value)))
+    if 0.0 < speed < SPEED_SENSORLESS_MIN:
+        return SPEED_SENSORLESS_MIN
+    if -SPEED_SENSORLESS_MIN < speed < 0.0:
+        return -SPEED_SENSORLESS_MIN
+    return speed
+
+
 PLOT_DEFAULT_WINDOWS = {
     "state": 0.65,
     "measure": 0.65,
@@ -1666,12 +1678,12 @@ class MyFocHostWindow(QtWidgets.QMainWindow):
             )
 
     def send_speed(self):
-        speed = max(SPEED_MIN, min(SPEED_MAX, self.speed_spin.value()))
+        speed = _clamp_speed_command(self.speed_spin.value())
         self.speed_spin.setValue(speed)
-        self.last_values["ref"] = speed
         if "state" in self.plot_auto_y:
             self.plot_auto_y["state"] = True
         self._refresh_visible_y_ranges(force=True)
+        self.last_values["ref"] = speed
         self.send_control_command(f"SPD={speed:.1f}")
 
     def _preview_target_speed_range(self, _value):

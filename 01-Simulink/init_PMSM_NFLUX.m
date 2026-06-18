@@ -76,6 +76,10 @@ iq_ref_slew_down = single(2.0);     % iq_ref 下降斜率 A/s
 iq_ref_min_handover = single(-0.2); % 接管阶段先限制负电流，避免猛刹车
 iq_ref_max_handover = single(1.2);
 speed_loop_delay_ticks = single(5000); % case5 进入后延时 0.5s 再开速度环
+reverse_cross_ticks = uint16(6000);    % 运行中正反转时开环跨越低速不可观区的采样点数
+reverse_align_ticks = uint16(5000);    % 正反转开环跨越后的角度重接管采样点数
+reverse_open_iq_ref = single(1.0);     % 正反转开环跨越期间 q 轴电流给定，单位 A
+reverse_open_speed_rpm = single(600.0);% 正反转开环跨越目标机械转速，单位 rpm
 
 %% 非线性磁链观测器参数
 Gamma = single(100000.0);         % 非线性磁链观测器校正增益
